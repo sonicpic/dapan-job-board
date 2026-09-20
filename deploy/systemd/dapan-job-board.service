@@ -1,0 +1,19 @@
+[Unit]
+Description=Dapan Job Board Docker Compose
+Requires=docker.service
+After=docker.service network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=zhihongpan
+Group=zhihongpan
+SupplementaryGroups=docker
+WorkingDirectory=/home/zhihongpan/services/dapan-job-board
+ExecStart=/usr/bin/docker compose up -d --no-build
+ExecStop=/usr/bin/docker compose stop
+TimeoutStartSec=180
+TimeoutStopSec=90
+
+[Install]
+WantedBy=multi-user.target

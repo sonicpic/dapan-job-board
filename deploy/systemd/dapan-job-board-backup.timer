@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Dapan Job Board SQLite backup
+
+[Timer]
+OnCalendar=*-*-* 03:20:00 Asia/Shanghai
+Persistent=true
+RandomizedDelaySec=5m
+Unit=dapan-job-board-backup.service
+
+[Install]
+WantedBy=timers.target

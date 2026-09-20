@@ -1,0 +1,11 @@
+[Unit]
+Description=Consistent SQLite backup for Dapan Job Board
+After=dapan-job-board.service
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/home/zhihongpan/services/dapan-job-board
+Environment=JOB_BOARD_ROOT=/home/zhihongpan/services/dapan-job-board
+ExecStart=/usr/bin/python3 /home/zhihongpan/services/dapan-job-board/scripts/backup.py
+Nice=10
