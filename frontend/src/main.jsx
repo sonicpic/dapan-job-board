@@ -37,6 +37,8 @@ import {
   Progress,
   Grid,
   Checkbox,
+  Upload,
+  Collapse,
 } from "antd";
 import zhCN from "antd/locale/zh_CN";
 import {
@@ -70,6 +72,11 @@ import {
   RadarChartOutlined,
   LinkOutlined,
   BellOutlined,
+  AudioOutlined,
+  UploadOutlined,
+  DeleteOutlined,
+  PlayCircleOutlined,
+  FileTextOutlined,
 } from "@ant-design/icons";
 import dayjs from "dayjs";
 import utc from "dayjs/plugin/utc";
@@ -177,6 +184,30 @@ async function api(path, method = "GET", body) {
   }
   return data;
 }
+async function uploadAudio(path, file) {
+  const r = await fetch("/api" + path, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: {
+      "Content-Type": file.type || "application/octet-stream",
+      "X-File-Name": encodeURIComponent(file.name),
+      "X-Requested-With": "job-board",
+    },
+    body: file,
+  });
+  let data = {};
+  try {
+    data = await r.json();
+  } catch {
+    data = { detail: r.status === 413 ? "录音文件过大" : "上传失败，请稍后重试" };
+  }
+  if (!r.ok) {
+    const error = new Error(data.detail || "上传失败，请稍后重试");
+    error.status = r.status;
+    throw error;
+  }
+  return data;
+}
 function sourceButton(source) {
   return (
     <Button
@@ -230,7 +261,161 @@ function Header({ active = "jobs", onChange, config, admin = false }) {
     </header>
   );
 }
-function Detail({ record, onClose, source, saved, toggle }) {
+
+const recordingStatus = {
+  uploaded: ["已上传", "blue"],
+  queued: ["排队中", "blue"],
+  transcribing: ["转写中", "processing"],
+  summarizing: ["总结中", "processing"],
+  completed: ["已完成", "green"],
+  error: ["处理失败", "red"],
+};
+function RecordingManager({ record, initial, onChanged }) {
+  const { message } = AntApp.useApp();
+  const [data, setData] = useState(initial || null);
+  const [loading, setLoading] = useState(!initial);
+  const [busy, setBusy] = useState(false);
+  const load = async () => {
+    if (!record?.id) return;
+    try {
+      setData(await api(`/admin/events/${record.id}/recording`));
+    } catch (e) {
+      if (e.status === 404) setData(null);
+      else message.error(e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => {
+    setData(initial || null);
+    setLoading(!initial);
+    load();
+  }, [record?.id]);
+  useEffect(() => {
+    if (!["queued", "transcribing", "summarizing"].includes(data?.status)) return;
+    const timer = setTimeout(load, 5000);
+    return () => clearTimeout(timer);
+  }, [data?.status, data?.updated_at]);
+  const act = async (fn, success) => {
+    setBusy(true);
+    try {
+      await fn();
+      message.success(success);
+      await load();
+      onChanged?.();
+    } catch (e) {
+      message.error(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  if (loading) return <Skeleton active paragraph={{ rows: 3 }} />;
+  const running = ["queued", "transcribing", "summarizing"].includes(data?.status);
+  const [statusLabel, statusColor] = recordingStatus[data?.status] || ["未上传", "default"];
+  return (
+    <Card size="small" className="recording-manager">
+      <div className="recording-manager-head">
+        <div>
+          <Text strong><AudioOutlined /> 宣讲会录音</Text>
+          <div><Text type="secondary">录音和转写仅管理员可见；总结需手动公开。</Text></div>
+        </div>
+        <Tag color={statusColor}>{statusLabel}</Tag>
+      </div>
+      {data ? (
+        <>
+          <Descriptions
+            size="small"
+            column={1}
+            items={[
+              { key: "file", label: "文件", children: `${data.original_name} · ${(data.size / 1024 / 1024).toFixed(1)} MB` },
+              { key: "updated", label: "更新时间", children: fmt(data.updated_at, "YYYY-MM-DD HH:mm:ss") },
+            ]}
+          />
+          {data.error && <Alert type="error" showIcon message={data.error} />}
+          <Space wrap>
+            <Button href={`/api/admin/events/${record.id}/recording/file`} icon={<AudioOutlined />}>
+              下载录音
+            </Button>
+            <Upload
+              accept=".m4a,.mp3,.mp4,.wav,.aac,.flac,.ogg,.webm,audio/*"
+              showUploadList={false}
+              disabled={busy || running}
+              beforeUpload={(file) => {
+                act(() => uploadAudio(`/admin/events/${record.id}/recording`, file), "录音已重新上传");
+                return false;
+              }}
+            >
+              <Button icon={<UploadOutlined />} loading={busy} disabled={running}>重新上传</Button>
+            </Upload>
+            <Button
+              type="primary"
+              icon={<PlayCircleOutlined />}
+              loading={running}
+              disabled={busy || running}
+              onClick={() => act(() => api(`/admin/events/${record.id}/recording/process`, "POST"), "已加入转写队列")}
+            >
+              {data.status === "completed" ? "重新转写和总结" : data.status === "error" ? "重试处理" : "开始转写与总结"}
+            </Button>
+            <Popconfirm
+              title="删除这份录音及其转写和总结？"
+              description="删除后无法恢复。"
+              onConfirm={() => act(() => api(`/admin/events/${record.id}/recording`, "DELETE"), "录音已删除")}
+            >
+              <Button danger icon={<DeleteOutlined />} disabled={busy || running}>删除</Button>
+            </Popconfirm>
+          </Space>
+          {data.summary && (
+            <div className="recording-visibility">
+              <Text strong>访客可查看“宣讲会总结”</Text>
+              <Switch
+                checked={data.summary_public}
+                checkedChildren="公开"
+                unCheckedChildren="仅管理员"
+                disabled={busy}
+                onChange={(value) => act(
+                  () => api(`/admin/events/${record.id}/recording/visibility`, "PUT", { public: value }),
+                  value ? "总结已对访客公开" : "总结已设为仅管理员可见",
+                )}
+              />
+            </div>
+          )}
+          {(data.transcript || data.summary) && (
+            <Collapse
+              items={[
+                data.summary && {
+                  key: "summary",
+                  label: <><FileTextOutlined /> 全文总结</>,
+                  children: <Paragraph className="recording-text preserve">{data.summary}</Paragraph>,
+                },
+                data.transcript && {
+                  key: "transcript",
+                  label: <><AudioOutlined /> 原始转写</>,
+                  children: <Paragraph className="recording-text preserve">{data.transcript}</Paragraph>,
+                },
+              ].filter(Boolean)}
+            />
+          )}
+        </>
+      ) : (
+        <Upload.Dragger
+          accept=".m4a,.mp3,.mp4,.wav,.aac,.flac,.ogg,.webm,audio/*"
+          showUploadList={false}
+          disabled={busy}
+          beforeUpload={(file) => {
+            act(() => uploadAudio(`/admin/events/${record.id}/recording`, file), "录音已上传");
+            return false;
+          }}
+        >
+          <p className="ant-upload-drag-icon"><UploadOutlined /></p>
+          <p>点击或拖拽上传录音</p>
+          <Text type="secondary">支持 M4A、MP3、MP4、WAV、AAC、FLAC、OGG、WebM，最大 500 MB</Text>
+        </Upload.Dragger>
+      )}
+    </Card>
+  );
+}
+
+function Detail({ record, onClose, source, saved, toggle, isAdmin, onChanged }) {
   if (!record) return null;
   const event = record.kind === "event";
   const rows = event
@@ -285,6 +470,23 @@ function Detail({ record, onClose, source, saved, toggle }) {
           children: <span className="preserve">{value || "原表未注明"}</span>,
         }))}
       />
+      {event && record.recording_summary && !isAdmin && (
+        <>
+          <Divider />
+          <section className="recording-summary-public">
+            <Text type="secondary">录音整理</Text>
+            <Title level={4}><FileTextOutlined /> 宣讲会总结</Title>
+            <Paragraph className="recording-text preserve">{record.recording_summary}</Paragraph>
+            <Alert type="info" showIcon message="本总结由录音转写后自动整理，听不清或录音缺失之处以总结中的完整性说明为准。" />
+          </section>
+        </>
+      )}
+      {event && isAdmin && (
+        <>
+          <Divider />
+          <RecordingManager record={record} initial={record.recording} onChanged={onChanged} />
+        </>
+      )}
       {record.review && (
         <>
           <Divider />
@@ -558,6 +760,7 @@ function PublicPage() {
     [selected, setSelected] = useState(null),
     [date, setDate] = useState(null),
     [calendar, setCalendar] = useState(false),
+    [isAdmin, setIsAdmin] = useState(false),
     [saved, setSaved] = useState(() => {
       try {
         return JSON.parse(localStorage.getItem("job-bookmarks") || "[]");
@@ -577,6 +780,7 @@ function PublicPage() {
   };
   useEffect(() => {
     load();
+    api("/session").then((value) => setIsAdmin(!!value.admin)).catch(() => setIsAdmin(false));
     const t = setInterval(load, 900000);
     const onFocus = () => {
       if (document.visibilityState === "visible") load();
@@ -1127,6 +1331,8 @@ function PublicPage() {
         source={configs?.source_url}
         saved={saved.includes(selected?.id)}
         toggle={toggle}
+        isAdmin={isAdmin}
+        onChanged={load}
       />
     </>
   );
@@ -1145,6 +1351,7 @@ function AdminPage() {
     [reviewQuery, setReviewQuery] = useState(""),
     [reviewStatus, setReviewStatus] = useState("all"),
     [edit, setEdit] = useState(null),
+    [recordingEvent, setRecordingEvent] = useState(null),
     [editInitial, setEditInitial] = useState({});
   const savedAdminLogin = useMemo(() => {
     try {
@@ -1387,7 +1594,7 @@ function AdminPage() {
     },
     {
       title: "操作",
-      width: 175,
+      width: kind === "event" ? 250 : 175,
       render: (_, r) => (
         <Space>
           <Button
@@ -1397,6 +1604,11 @@ function AdminPage() {
           >
             编辑
           </Button>
+          {r.kind === "event" && (
+            <Button size="small" icon={<AudioOutlined />} onClick={() => setRecordingEvent(r)}>
+              录音
+            </Button>
+          )}
           {r.modified && (
             <Popconfirm
               title="恢复到原表 / 初始内容？"
@@ -1447,6 +1659,7 @@ function AdminPage() {
       (!reviewQuery || item.company.includes(reviewQuery)) &&
       (reviewStatus === "all" || item.status === reviewStatus),
   );
+  const recordingRows = data.records.filter((item) => item.kind === "event");
   const reviewPendingCount = data.reviews.filter((item) =>
     ["queued", "running"].includes(item.status),
   ).length;
@@ -1674,6 +1887,63 @@ function AdminPage() {
                       type="info"
                       showIcon
                       message="隐藏的内容仍保留在后台，可随时重新展示。原表记录移除后仍作为历史信息保留；人工新增内容不受同步影响。"
+                    />
+                  </>
+                ),
+              },
+              {
+                key: "recordings",
+                label: (
+                  <Space>
+                    <AudioOutlined />
+                    宣讲录音
+                  </Space>
+                ),
+                children: (
+                  <>
+                    <Alert
+                      type={data.recording_config.configured ? "success" : "warning"}
+                      showIcon
+                      message={data.recording_config.configured ? "录音转写与总结服务已就绪" : "录音处理服务尚未配置完整"}
+                      description={
+                        data.recording_config.configured
+                          ? `转写模型：${data.recording_config.asr_model}；总结模型：${data.recording_config.summary_model}。录音、原始转写和未公开总结仅管理员可见。`
+                          : `待配置：${data.recording_config.missing.join("、")}`
+                      }
+                    />
+                    <Table
+                      style={{ marginTop: 16 }}
+                      rowKey="id"
+                      dataSource={recordingRows}
+                      scroll={{ x: 720 }}
+                      pagination={{ pageSize: 10, showSizeChanger: false, showTotal: (total) => `共 ${total} 场` }}
+                      columns={[
+                        {
+                          title: "宣讲企业 / 活动",
+                          dataIndex: "company",
+                          width: 230,
+                          render: (value, item) => <><Text strong>{value}</Text><div><Text type="secondary">{item.time_text || "时间未注明"}</Text></div></>,
+                        },
+                        { title: "地点", dataIndex: "location", width: 150, render: (value) => value || "—" },
+                        {
+                          title: "录音状态",
+                          width: 120,
+                          render: (_, item) => {
+                            const [label, color] = recordingStatus[item.recording?.status] || ["未上传", "default"];
+                            return <Tag color={color}>{label}</Tag>;
+                          },
+                        },
+                        {
+                          title: "访客可见",
+                          width: 100,
+                          render: (_, item) => item.recording?.summary_public ? <Tag color="green">已公开</Tag> : <Text type="secondary">否</Text>,
+                        },
+                        {
+                          title: "操作",
+                          width: 100,
+                          render: (_, item) => <Button icon={<AudioOutlined />} onClick={() => setRecordingEvent(item)}>管理录音</Button>,
+                        },
+                      ]}
                     />
                   </>
                 ),
@@ -2177,6 +2447,22 @@ function AdminPage() {
             </Form.Item>
           ))}
         </Form>
+      </Modal>
+      <Modal
+        title={recordingEvent ? `${recordingEvent.company} · 宣讲会录音` : "宣讲会录音"}
+        open={!!recordingEvent}
+        width={780}
+        footer={null}
+        onCancel={() => setRecordingEvent(null)}
+        destroyOnHidden
+      >
+        {recordingEvent && (
+          <RecordingManager
+            record={recordingEvent}
+            initial={recordingEvent.recording}
+            onChanged={load}
+          />
+        )}
       </Modal>
     </>
   );

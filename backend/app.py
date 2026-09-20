@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from source import SOURCE, TZ, fetch_source, safe_link, normalize_date
 import review
+import recording
 
 DATA = Path(os.getenv('DATA_DIR', '/app/data'))
 DATA.mkdir(parents=True, exist_ok=True)
@@ -31,7 +32,13 @@ stop = threading.Event()
 sync_lock = threading.Lock()
 review_lock = threading.Lock()
 review_wake = threading.Event()
+recording_lock = threading.Lock()
+recording_wake = threading.Event()
 MAX_REVIEW_PENDING = 5
+MAX_AUDIO_BYTES = int(os.getenv('MAX_AUDIO_UPLOAD_MB', '500')) * 1024 * 1024
+RECORDINGS = DATA / 'recordings'
+RECORDINGS.mkdir(parents=True, exist_ok=True)
+ALLOWED_AUDIO_EXTENSIONS = {'.m4a', '.mp3', '.mp4', '.wav', '.aac', '.flac', '.ogg', '.webm'}
 DEFAULTS = {'title': '大潘的就业情报站', 'subtitle': '软件学院 · 校园招聘与宣讲会',
             'announcement': '信息来自学院就业共享表格。岗位要求与时间安排请以企业最新公告为准。',
             'source_url': SOURCE, 'auto_sync': True}
@@ -97,12 +104,30 @@ def init():
           queued_at TEXT,
           error TEXT
         );
+        CREATE TABLE IF NOT EXISTS event_recordings(
+          record_id TEXT PRIMARY KEY,
+          original_name TEXT NOT NULL,
+          file_path TEXT NOT NULL,
+          mime_type TEXT,
+          size INTEGER NOT NULL,
+          status TEXT NOT NULL,
+          asr_task_id TEXT,
+          transcript TEXT,
+          summary TEXT,
+          summary_public INTEGER NOT NULL DEFAULT 0,
+          error TEXT,
+          source_token_hash TEXT,
+          source_token_expires REAL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
         ''')
         review_columns = {row['name'] for row in c.execute('PRAGMA table_info(company_reviews)')}
         if 'usage' not in review_columns:
             c.execute("ALTER TABLE company_reviews ADD COLUMN usage TEXT NOT NULL DEFAULT '{}'")
         c.execute("UPDATE sync_logs SET status='error',finished=?,message='服务重新启动，同步将重试' WHERE status='running'", (now(),))
         c.execute("UPDATE company_reviews SET status='queued',error='服务重新启动，分析将重试' WHERE status='running'")
+        c.execute("UPDATE event_recordings SET status='queued',error='服务重新启动，录音处理将重试' WHERE status IN ('transcribing','summarizing')")
         if not c.execute('SELECT 1 FROM users').fetchone():
             password = os.getenv('ADMIN_PASSWORD') or secrets.token_urlsafe(24)
             c.execute('INSERT INTO users VALUES (?,?)', ('admin', hash_pw(password)))
@@ -328,15 +353,88 @@ def review_worker():
             review_wake.clear()
 
 
+def recording_event(record_id):
+    for item in effective(True):
+        if item['id'] == record_id and item['kind'] == 'event':
+            return item
+    return None
+
+
+def update_recording_status(record_id, status, error=None, **values):
+    allowed = {'asr_task_id', 'transcript', 'summary', 'source_token_hash', 'source_token_expires'}
+    assignments = ['status=?', 'error=?', 'updated_at=?']
+    params = [status, error, now()]
+    for key, value in values.items():
+        if key not in allowed:
+            continue
+        assignments.append(key + '=?')
+        params.append(value)
+    params.append(record_id)
+    with conn() as c:
+        c.execute(f"UPDATE event_recordings SET {','.join(assignments)} WHERE record_id=?", params)
+
+
+def process_recording_queue():
+    cfg = recording.config()
+    if not cfg['configured'] or not recording_lock.acquire(blocking=False):
+        return False
+    record_id = None
+    raw_token = None
+    try:
+        with conn() as c:
+            c.execute('BEGIN IMMEDIATE')
+            row = c.execute("SELECT * FROM event_recordings WHERE status='queued' ORDER BY updated_at LIMIT 1").fetchone()
+            if not row:
+                return False
+            record_id = row['record_id']
+            raw_token = secrets.token_urlsafe(40)
+            token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+            expires = time.time() + 86400
+            c.execute("UPDATE event_recordings SET status='transcribing',error=NULL,source_token_hash=?,source_token_expires=?,updated_at=? WHERE record_id=?",
+                      (token_hash, expires, now(), record_id))
+        event = recording_event(record_id) or {}
+        origin = (os.getenv('ASR_PUBLIC_ORIGIN', '').strip() or ORIGIN).rstrip('/')
+        source_url = f'{origin}/api/recordings/source/{raw_token}'
+        task_id = recording.submit_asr(source_url)
+        update_recording_status(record_id, 'transcribing', asr_task_id=task_id)
+        output = recording.wait_asr(task_id)
+        transcript = recording.fetch_transcript(output)
+        update_recording_status(record_id, 'summarizing', transcript=transcript,
+                                source_token_hash=None, source_token_expires=None)
+        summary = recording.summarize(transcript, event.get('company', ''), event.get('time_text', ''))
+        update_recording_status(record_id, 'completed', transcript=transcript, summary=summary,
+                                source_token_hash=None, source_token_expires=None)
+        with conn() as c:
+            audit(c, '完成宣讲会录音转写与总结', record_id)
+    except Exception as exc:
+        if record_id:
+            update_recording_status(record_id, 'error', str(exc)[:800],
+                                    source_token_hash=None, source_token_expires=None)
+            with conn() as c:
+                audit(c, '宣讲会录音处理失败', record_id)
+    finally:
+        recording_lock.release()
+    return bool(record_id)
+
+
+def recording_worker():
+    while not stop.is_set():
+        if not process_recording_queue():
+            recording_wake.wait(5)
+            recording_wake.clear()
+
+
 @asynccontextmanager
 async def lifespan(app):
     init()
     threading.Thread(target=worker, daemon=True).start()
     threading.Thread(target=review_worker, daemon=True).start()
+    threading.Thread(target=recording_worker, daemon=True).start()
     yield
     stop.set()
     wake.set()
     review_wake.set()
+    recording_wake.set()
 
 
 app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
@@ -351,7 +449,9 @@ async def policy(request, call_next):
             length = int(request.headers.get('content-length', '0') or '0')
         except ValueError:
             return Response('Invalid content length', 400)
-        if length > 100000:
+        is_audio_upload = request.method == 'POST' and re.fullmatch(r'/api/admin/events/[^/]+/recording', request.url.path)
+        limit = MAX_AUDIO_BYTES if is_audio_upload else 100000
+        if length > limit:
             return Response('Request too large', 413)
     response = await call_next(request)
     if request.url.path.startswith('/api/'):
@@ -370,11 +470,27 @@ def admin(request):
     return session['username']
 
 
-def effective(include_hidden=False):
+def recording_dict(row, detail=False):
+    if not row:
+        return None
+    result = {
+        key: row[key] for key in (
+            'record_id', 'original_name', 'mime_type', 'size', 'status', 'asr_task_id',
+            'summary', 'summary_public', 'error', 'created_at', 'updated_at'
+        )
+    }
+    result['summary_public'] = bool(result['summary_public'])
+    if detail:
+        result['transcript'] = row['transcript']
+    return result
+
+
+def effective(include_hidden=False, include_admin_recordings=False):
     with conn() as c:
         overrides = {r['id']: json.loads(r['data']) for r in c.execute('SELECT * FROM overrides')}
         rows = c.execute('SELECT * FROM records WHERE present=1').fetchall()
         company_reviews = {r['company']: review_dict(r) for r in c.execute('SELECT * FROM company_reviews WHERE score IS NOT NULL AND summary IS NOT NULL')}
+        recordings = {r['record_id']: r for r in c.execute('SELECT * FROM event_recordings')}
     result = []
     today = dt.datetime.now(TZ).date().isoformat()
     instant = now()
@@ -393,6 +509,12 @@ def effective(include_hidden=False):
             item['status'] = 'unknown' if not date else ('ended' if date < today or end and end < instant else 'today' if date == today else 'upcoming')
             if date == today and item.get('time_known') and start and start < instant and not end:
                 item['status'] = 'started'
+            recording_row = recordings.get(item['id'])
+            if recording_row:
+                if include_admin_recordings:
+                    item['recording'] = recording_dict(recording_row)
+                elif recording_row['summary_public'] and recording_row['summary']:
+                    item['recording_summary'] = recording_row['summary']
         result.append(item)
     return result
 
@@ -413,6 +535,15 @@ def public():
                      'has_error': bool(cfg.get('last_error')), 'running': sync_lock.locked(), 'interval_minutes': 15,
                      'source_title': cfg.get('source_meta', {}).get('title'),
                      'source_version': cfg.get('source_meta', {}).get('version')}, 'server_time': now()}
+
+
+@app.get('/api/session')
+def session(request: Request):
+    try:
+        username = admin(request)
+    except HTTPException:
+        return {'admin': False}
+    return {'admin': True, 'username': username}
 
 
 class Login(BaseModel):
@@ -463,7 +594,7 @@ def dashboard(request: Request):
         logs = [dict(r) for r in c.execute('SELECT * FROM sync_logs ORDER BY id DESC LIMIT 100')]
         audits = [dict(r) for r in c.execute('SELECT * FROM audit ORDER BY id DESC LIMIT 50')]
         stored_reviews = {r['company']: review_dict(r, True) for r in c.execute('SELECT * FROM company_reviews')}
-    records = effective(True)
+    records = effective(True, True)
     companies = sorted(reviewable_companies(records))
     reviews = [stored_reviews.get(company) or {'company': company, 'status': 'unreviewed', 'score': None,
                                                'label': None, 'summary': None, 'pros': [], 'cons': [],
@@ -473,7 +604,8 @@ def dashboard(request: Request):
     return {'username': username, 'records': records, 'config': {k: cfg[k] for k in DEFAULTS},
             'logs': logs, 'audit': audits, 'last_error': cfg.get('last_error'), 'sync_running': sync_lock.locked(),
             'reviews': reviews, 'review_config': review.config(), 'review_running': review_lock.locked(),
-            'pushplus': pushplus_status(cfg)}
+            'pushplus': pushplus_status(cfg), 'recording_config': recording.config(),
+            'recording_running': recording_lock.locked()}
 
 
 @app.post('/api/admin/sync')
@@ -501,6 +633,173 @@ class ReviewBatchRequest(BaseModel):
 
 class PushPlusUpdate(BaseModel):
     enabled: bool
+
+
+class RecordingVisibilityUpdate(BaseModel):
+    public: bool
+
+
+def require_event(record_id):
+    event = recording_event(record_id)
+    if not event:
+        raise HTTPException(404, '宣讲会记录不存在')
+    return event
+
+
+def safe_recording_path(value):
+    try:
+        path = Path(value).resolve()
+        path.relative_to(RECORDINGS.resolve())
+    except (ValueError, OSError):
+        raise HTTPException(404, '录音文件不存在')
+    if not path.is_file():
+        raise HTTPException(404, '录音文件不存在')
+    return path
+
+
+@app.post('/api/admin/events/{record_id}/recording')
+async def upload_recording(record_id: str, request: Request):
+    admin(request)
+    require_event(record_id)
+    encoded_name = request.headers.get('x-file-name', '')
+    try:
+        from urllib.parse import unquote
+        original_name = Path(unquote(encoded_name)).name
+    except Exception:
+        original_name = ''
+    extension = Path(original_name).suffix.lower()
+    if not original_name or extension not in ALLOWED_AUDIO_EXTENSIONS:
+        raise HTTPException(422, '请选择 M4A、MP3、MP4、WAV、AAC、FLAC、OGG 或 WebM 录音')
+    with conn() as c:
+        current = c.execute('SELECT * FROM event_recordings WHERE record_id=?', (record_id,)).fetchone()
+        if current and current['status'] in ('transcribing', 'summarizing'):
+            raise HTTPException(409, '录音正在处理中，暂时不能替换')
+    target_dir = RECORDINGS / hashlib.sha256(record_id.encode()).hexdigest()[:24]
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target = target_dir / (uuid.uuid4().hex + extension)
+    temporary = target.with_suffix(target.suffix + '.upload')
+    total = 0
+    try:
+        with temporary.open('wb') as output:
+            async for chunk in request.stream():
+                total += len(chunk)
+                if total > MAX_AUDIO_BYTES:
+                    raise HTTPException(413, f'录音不能超过 {MAX_AUDIO_BYTES // 1024 // 1024} MB')
+                output.write(chunk)
+        if total == 0:
+            raise HTTPException(422, '录音文件为空')
+        temporary.replace(target)
+        with conn() as c:
+            current = c.execute('SELECT * FROM event_recordings WHERE record_id=?', (record_id,)).fetchone()
+            c.execute('''INSERT OR REPLACE INTO event_recordings(
+                         record_id,original_name,file_path,mime_type,size,status,asr_task_id,transcript,summary,
+                         summary_public,error,source_token_hash,source_token_expires,created_at,updated_at)
+                         VALUES(?,?,?,?,?,'uploaded',NULL,NULL,NULL,0,NULL,NULL,NULL,?,?)''',
+                      (record_id, original_name[:255], str(target), request.headers.get('content-type', '')[:120],
+                       total, current['created_at'] if current else now(), now()))
+            audit(c, '上传宣讲会录音' if not current else '重新上传宣讲会录音', record_id)
+        if current:
+            old_path = Path(current['file_path'])
+            if old_path != target:
+                try:
+                    old_path.resolve().relative_to(RECORDINGS.resolve())
+                    old_path.unlink(missing_ok=True)
+                except (ValueError, OSError):
+                    pass
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        target.unlink(missing_ok=True)
+        raise
+    with conn() as c:
+        return recording_dict(c.execute('SELECT * FROM event_recordings WHERE record_id=?', (record_id,)).fetchone())
+
+
+@app.get('/api/admin/events/{record_id}/recording')
+def get_recording(record_id: str, request: Request):
+    admin(request)
+    require_event(record_id)
+    with conn() as c:
+        row = c.execute('SELECT * FROM event_recordings WHERE record_id=?', (record_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, '尚未上传录音')
+    return recording_dict(row, True)
+
+
+@app.get('/api/admin/events/{record_id}/recording/file')
+def download_recording(record_id: str, request: Request):
+    admin(request)
+    with conn() as c:
+        row = c.execute('SELECT * FROM event_recordings WHERE record_id=?', (record_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, '尚未上传录音')
+    return FileResponse(safe_recording_path(row['file_path']), media_type=row['mime_type'] or 'application/octet-stream',
+                        filename=row['original_name'])
+
+
+@app.delete('/api/admin/events/{record_id}/recording')
+def delete_recording(record_id: str, request: Request):
+    admin(request)
+    with conn() as c:
+        row = c.execute('SELECT * FROM event_recordings WHERE record_id=?', (record_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, '尚未上传录音')
+        if row['status'] in ('transcribing', 'summarizing'):
+            raise HTTPException(409, '录音正在处理中，暂时不能删除')
+        c.execute('DELETE FROM event_recordings WHERE record_id=?', (record_id,))
+        audit(c, '删除宣讲会录音', record_id)
+    try:
+        path = safe_recording_path(row['file_path'])
+        path.unlink(missing_ok=True)
+        path.parent.rmdir()
+    except (HTTPException, OSError):
+        pass
+    return {'ok': True}
+
+
+@app.post('/api/admin/events/{record_id}/recording/process')
+def start_recording_process(record_id: str, request: Request):
+    admin(request)
+    require_event(record_id)
+    cfg = recording.config()
+    if not cfg['configured']:
+        raise HTTPException(409, '录音处理服务尚未配置完整：' + '、'.join(cfg['missing']))
+    with conn() as c:
+        row = c.execute('SELECT * FROM event_recordings WHERE record_id=?', (record_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, '请先上传录音')
+        if row['status'] in ('queued', 'transcribing', 'summarizing'):
+            raise HTTPException(409, '这份录音已在处理队列中')
+        c.execute("UPDATE event_recordings SET status='queued',error=NULL,updated_at=? WHERE record_id=?", (now(), record_id))
+        audit(c, '启动宣讲会录音处理', record_id)
+    recording_wake.set()
+    return {'ok': True}
+
+
+@app.put('/api/admin/events/{record_id}/recording/visibility')
+def update_recording_visibility(record_id: str, body: RecordingVisibilityUpdate, request: Request):
+    admin(request)
+    with conn() as c:
+        row = c.execute('SELECT summary FROM event_recordings WHERE record_id=?', (record_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, '尚未上传录音')
+        if body.public and not row['summary']:
+            raise HTTPException(409, '总结完成后才能公开')
+        c.execute('UPDATE event_recordings SET summary_public=?,updated_at=? WHERE record_id=?',
+                  (int(body.public), now(), record_id))
+        audit(c, '公开宣讲会总结' if body.public else '隐藏宣讲会总结', record_id)
+    return {'ok': True, 'public': body.public}
+
+
+@app.get('/api/recordings/source/{token}')
+def asr_recording_source(token: str):
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    with conn() as c:
+        row = c.execute('''SELECT * FROM event_recordings
+                           WHERE source_token_hash=? AND source_token_expires>? AND status='transcribing' ''',
+                        (token_hash, time.time())).fetchone()
+    if not row or not hmac.compare_digest(row['source_token_hash'], token_hash):
+        raise HTTPException(404, '临时录音链接不存在或已过期')
+    return FileResponse(safe_recording_path(row['file_path']), media_type=row['mime_type'] or 'application/octet-stream')
 
 
 @app.put('/api/admin/pushplus')

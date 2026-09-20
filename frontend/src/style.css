@@ -1061,3 +1061,11 @@ input {
     width: 100%;
   }
 }
+.recording-manager { margin-top: 8px; background: #fbfcfa; }
+.recording-manager-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 16px; }
+.recording-manager .ant-alert { margin: 12px 0; }
+.recording-visibility { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 14px 0; margin-top: 12px; border-top: 1px solid #e9ede8; }
+.recording-manager .ant-collapse { margin-top: 16px; }
+.recording-text { white-space: pre-wrap; line-height: 1.85; max-height: 560px; overflow: auto; }
+.recording-summary-public { margin: 8px 0; }
+.recording-summary-public .ant-alert { margin-top: 16px; }
