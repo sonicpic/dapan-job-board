@@ -603,9 +603,18 @@ def effective(include_invisible=False, include_admin_recordings=False, include_a
             item['status'] = 'expired' if deadline and deadline < today else ('upcoming' if start and start > today else 'open' if deadline else 'unknown')
         elif item['kind'] in ('event', 'interview'):
             date, start, end = item.get('date'), item.get('starts_at'), item.get('ends_at')
-            item['status'] = 'unknown' if not date else ('ended' if date < today or end and end < instant else 'today' if date == today else 'upcoming')
-            if date == today and item.get('time_known') and start and start < instant and not end:
-                item['status'] = 'started'
+            if item['kind'] == 'event':
+                # Some source rows include an end time while others only include a start time.
+                # Keep the end time as event detail, but do not let that optional field create a
+                # different public status for otherwise equivalent presentations.
+                item['status'] = 'unknown' if not date else (
+                    'started' if date < today or date == today and item.get('time_known') and start and start <= instant
+                    else 'today' if date == today else 'upcoming'
+                )
+            else:
+                item['status'] = 'unknown' if not date else ('ended' if date < today or end and end < instant else 'today' if date == today else 'upcoming')
+                if date == today and item.get('time_known') and start and start < instant and not end:
+                    item['status'] = 'started'
             recording_row = recordings.get(item['id'])
             if recording_row:
                 if include_admin_recordings:
@@ -993,13 +1002,20 @@ def known_companies():
 
 
 def reviewable_companies(records=None):
-    """Companies with a job posting or a presentation that has not ended."""
+    """Companies with a job posting or a presentation whose scheduled window is not over."""
     records = records if records is not None else effective(True)
+    instant = now()
+    today = dt.datetime.now(TZ).date().isoformat()
+
+    def event_is_reviewable(item):
+        date, end = item.get('date'), item.get('ends_at')
+        return not (date and date < today or end and end < instant)
+
     return {
         item.get('company', '').strip()
         for item in records
         if item.get('company', '').strip()
-        and (item.get('kind') == 'job' or item.get('kind') == 'event' and item.get('status') != 'ended')
+        and (item.get('kind') == 'job' or item.get('kind') == 'event' and event_is_reviewable(item))
     }
 
 

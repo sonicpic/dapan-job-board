@@ -1019,7 +1019,7 @@ function PublicPage() {
     interviews = all.filter((r) => r.kind === "interview"),
     today = nowCN().format("YYYY-MM-DD");
   const dayEvents = events
-    .filter((r) => r.date === today && r.status !== "ended")
+    .filter((r) => r.date === today)
     .sort((a, b) => (a.starts_at || "").localeCompare(b.starts_at || ""));
   const cities = [
     "北京",
@@ -1276,7 +1276,6 @@ function PublicPage() {
                       { value: "upcoming", label: "待参加" },
                       { value: "today", label: "今天" },
                       { value: "all", label: "全部" },
-                      { value: "ended", label: "往期" },
                     ]}
                   />
                 ) : tab === "interviews" ? (

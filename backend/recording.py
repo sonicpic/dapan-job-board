@@ -11,6 +11,10 @@ from pathlib import Path
 ASR_MODEL = 'qwen-audio-3.0-asr-flash-filetrans'
 
 
+class TransientSummaryError(RuntimeError):
+    """A summary request that is safe to retry without rerunning ASR."""
+
+
 def _env(name, default=''):
     value = os.getenv(name)
     return (value if value and value.strip() else default).strip()
@@ -241,7 +245,7 @@ def _response_text(response):
     return text
 
 
-def _sse_request(url, payload, headers=None, timeout=300):
+def _sse_request_once(url, payload, headers=None, timeout=300):
     body = json.dumps({**payload, 'stream': True}, ensure_ascii=False).encode('utf-8')
     request = urllib.request.Request(
         url,
@@ -284,7 +288,7 @@ def _sse_request(url, payload, headers=None, timeout=300):
                     last_response = item['response']
         if last_response and last_response.get('output'):
             return last_response
-        raise RuntimeError('总结模型流式响应结束，但没有返回完整结果')
+        raise TransientSummaryError('总结模型流式响应结束，但没有返回完整结果')
     except urllib.error.HTTPError as exc:
         raw = exc.read().decode('utf-8', errors='replace')
         try:
@@ -296,9 +300,26 @@ def _sse_request(url, payload, headers=None, timeout=300):
         extra = [str(message)[:500]] if message else []
         if cf_ray:
             extra.append('cf-ray=' + cf_ray[:120])
-        raise RuntimeError(f'外部服务返回 HTTP {exc.code}' + (('：' + '；'.join(extra)) if extra else '')) from exc
+        message = f'外部服务返回 HTTP {exc.code}' + (('：' + '；'.join(extra)) if extra else '')
+        if exc.code in {408, 425, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524}:
+            raise TransientSummaryError(message) from exc
+        raise RuntimeError(message) from exc
     except (urllib.error.URLError, TimeoutError) as exc:
-        raise RuntimeError('连接外部总结服务失败') from exc
+        raise TransientSummaryError('连接外部总结服务失败') from exc
+
+
+def _sse_request(url, payload, headers=None, timeout=300):
+    try:
+        attempts = min(5, max(1, int(_env('RECORDING_SUMMARY_ATTEMPTS', '3'))))
+    except ValueError:
+        attempts = 3
+    for attempt in range(1, attempts + 1):
+        try:
+            return _sse_request_once(url, payload, headers, timeout)
+        except TransientSummaryError as exc:
+            if attempt == attempts:
+                raise RuntimeError(f'{exc}；已自动尝试 {attempts} 次') from exc
+            time.sleep(15 * (3 ** (attempt - 1)))
 
 
 def _call_summary(instructions, content, max_output_tokens):

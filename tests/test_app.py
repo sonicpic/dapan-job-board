@@ -249,6 +249,27 @@ def test_recording_summary_stream_returns_completed_response(monkeypatch):
     assert captured['stream'] is True
 
 
+def test_recording_summary_retries_transient_stream_failure(monkeypatch):
+    completed = {'output': [{'type': 'message', 'content': [{'type': 'output_text', 'text': '完成'}]}]}
+    monkeypatch.setenv('RECORDING_SUMMARY_ATTEMPTS', '3')
+    with patch.object(recording, '_sse_request_once', side_effect=[
+             recording.TransientSummaryError('外部服务返回 HTTP 521'), completed,
+         ]) as request, \
+         patch.object(recording.time, 'sleep') as sleep:
+        assert recording._sse_request('https://model.example/v1/responses', {'model': 'test'}) == completed
+    assert request.call_count == 2
+    sleep.assert_called_once_with(15)
+
+
+def test_presentation_with_end_time_stays_started(client):
+    event = dict(fixture_items()[1], starts_at='2000-01-01T09:00:00+08:00',
+                 ends_at='2000-01-01T11:00:00+08:00', date='2000-01-01')
+    sync_fixture([fixture_items()[0], event])
+    result = next(row for row in client.get('/api/public').json()['records'] if row['kind'] == 'event')
+    assert result['status'] == 'started'
+    assert result['ends_at'] == '2000-01-01T11:00:00+08:00'
+
+
 def test_long_interview_summary_is_split_into_short_markdown_sections():
     calls = []
     with patch.object(recording, '_call_summary', side_effect=lambda instructions, content, max_tokens: (
