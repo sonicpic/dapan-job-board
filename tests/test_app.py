@@ -214,6 +214,53 @@ def test_recording_summary_prompt_requires_markdown(monkeypatch):
     assert '## 录音完整性说明' in calls[0][0]
 
 
+def test_recording_summary_respects_configured_output_limit(monkeypatch):
+    monkeypatch.setenv('OPENAI_BASE_URL', 'https://model.example/v1')
+    monkeypatch.setenv('OPENAI_API_KEY', 'test-key')
+    monkeypatch.setenv('OPENAI_MODEL', 'gpt-5.6-luna')
+    monkeypatch.setenv('RECORDING_MAX_OUTPUT_TOKENS', '2000')
+    captured = {}
+    with patch.object(recording, '_sse_request', side_effect=lambda url, payload, *args, **kwargs: (
+        captured.update(payload) or {'output_text': '## 总结\n内容'}
+    )):
+        assert recording._call_summary('指令', '内容', 5000).startswith('## 总结')
+    assert captured['max_output_tokens'] == 2000
+    assert captured['reasoning'] == {'effort': 'max'}
+
+
+def test_recording_summary_stream_returns_completed_response(monkeypatch):
+    completed = {'output_text': '## 总结\n流式结果'}
+    lines = [
+        b'event: response.created\n', b'data: {"type":"response.created"}\n', b'\n',
+        b'event: response.completed\n',
+        ('data: ' + json.dumps({'type': 'response.completed', 'response': completed}) + '\n').encode(),
+        b'\n',
+    ]
+    class StreamResponse:
+        def __enter__(self): return iter(lines)
+        def __exit__(self, *args): return False
+    captured = {}
+    def open_stream(request, timeout=300):
+        captured.update(json.loads(request.data.decode()))
+        return StreamResponse()
+    with patch.object(recording.urllib.request, 'urlopen', side_effect=open_stream):
+        result = recording._sse_request('https://model.example/v1/responses', {'model': 'test'})
+    assert result == completed
+    assert captured['stream'] is True
+
+
+def test_long_interview_summary_is_split_into_short_markdown_sections():
+    calls = []
+    with patch.object(recording, '_call_summary', side_effect=lambda instructions, content, max_tokens: (
+        calls.append((instructions, content, max_tokens)) or f'## 第 {len(calls)} 部分\n内容'
+    )):
+        result = recording.summarize('面试转写。' * 2000, '示例公司', '2026-09-20 14:00', 'interview')
+    assert len(calls) == 3
+    assert [call[2] for call in calls] == [1300, 1300, 800]
+    assert all('完整面试转写' in call[1] for call in calls)
+    assert '## 第 1 部分' in result and '## 第 3 部分' in result
+
+
 def test_recording_permissions_and_file_validation(client):
     sync_fixture()
     path = '/api/admin/events/source-event-1/recording'
@@ -554,7 +601,7 @@ def test_openai_extracts_cli_proxy_open_page_url(monkeypatch):
             'usage': {'input_tokens': 12000, 'output_tokens': 300, 'total_tokens': 12300},
         }
 
-    with patch.object(app.review, '_post_json', side_effect=fake_post):
+    with patch.object(app.review, '_post_sse_json', side_effect=fake_post):
         result, _ = app.review.analyze('测试公司')
 
     assert result['sources'][0]['url'] == 'https://example.com/opened-page'
@@ -575,7 +622,7 @@ def test_openai_extracts_sources_from_structured_result(monkeypatch):
             ],
         }, ensure_ascii=False)}]}], 'usage': {'total_tokens': 1000}}
 
-    with patch.object(app.review, '_post_json', side_effect=fake_post):
+    with patch.object(app.review, '_post_sse_json', side_effect=fake_post):
         result, _ = app.review.analyze('测试公司')
 
     assert [source['url'] for source in result['sources']] == [
@@ -624,7 +671,7 @@ def test_openai_responses_web_search_records_usage(monkeypatch):
             'usage': {'input_tokens': 8000, 'output_tokens': 300, 'total_tokens': 8300},
         }
 
-    with patch.object(app.review, '_post_json', side_effect=fake_post):
+    with patch.object(app.review, '_post_sse_json', side_effect=fake_post):
         result, provider = app.review.analyze('测试公司')
 
     assert provider['name'] == 'CLIProxyAPI 联网搜索'
@@ -636,7 +683,7 @@ def test_openai_responses_web_search_records_usage(monkeypatch):
     }
     assert calls[0][0] == 'https://proxy.example/v1/responses'
     assert calls[0][1]['model'] == 'gpt-5.6-luna'
-    assert calls[0][1]['reasoning'] == {'effort': 'low'}
+    assert calls[0][1]['reasoning'] == {'effort': 'max'}
     assert calls[0][1]['max_output_tokens'] == 1200
     assert calls[0][2]['Authorization'] == 'Bearer test-openai-key'
     assert calls[0][2]['User-Agent'].startswith('Mozilla/5.0')

@@ -29,7 +29,7 @@ OPENAI_API_KEY=...
 OPENAI_BASE_URL=https://api.example.com/v1
 OPENAI_MODEL=gpt-5.6-luna
 OPENAI_PROVIDER_NAME=OpenAI 兼容联网搜索
-OPENAI_REASONING_EFFORT=low
+OPENAI_REASONING_EFFORT=max
 OPENAI_MAX_OUTPUT_TOKENS=1200
 OPENAI_USER_AGENT=Mozilla/5.0 (compatible; JobBoardReview/1.0)
 # 只有 API 服务仍使用旧工具名时才设置为 web_search_preview

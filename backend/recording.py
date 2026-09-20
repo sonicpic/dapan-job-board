@@ -241,14 +241,79 @@ def _response_text(response):
     return text
 
 
+def _sse_request(url, payload, headers=None, timeout=300):
+    body = json.dumps({**payload, 'stream': True}, ensure_ascii=False).encode('utf-8')
+    request = urllib.request.Request(
+        url,
+        data=body,
+        method='POST',
+        headers={
+            'Accept': 'text/event-stream',
+            'Content-Type': 'application/json; charset=utf-8',
+            'User-Agent': 'JobBoardRecording/1.0',
+            **(headers or {}),
+        },
+    )
+    event_name, last_response = '', None
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            for raw in response:
+                line = raw.decode('utf-8', errors='replace').strip()
+                if not line:
+                    event_name = ''
+                    continue
+                if line.startswith('event:'):
+                    event_name = line[6:].strip()
+                    continue
+                if not line.startswith('data:'):
+                    continue
+                data = line[5:].strip()
+                if not data or data == '[DONE]':
+                    continue
+                try:
+                    item = json.loads(data)
+                except json.JSONDecodeError:
+                    continue
+                event_type = item.get('type') or item.get('event') or event_name
+                if event_type == 'response.completed':
+                    return item.get('response', item)
+                if event_type in ('response.failed', 'response.incomplete'):
+                    detail = item.get('response', {}).get('error') or item.get('error') or event_type
+                    raise RuntimeError('总结模型流式响应未完成：' + str(detail)[:500])
+                if isinstance(item.get('response'), dict):
+                    last_response = item['response']
+        if last_response and last_response.get('output'):
+            return last_response
+        raise RuntimeError('总结模型流式响应结束，但没有返回完整结果')
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode('utf-8', errors='replace')
+        try:
+            details = json.loads(raw)
+            message = details.get('message') or details.get('error', {}).get('message') or details.get('code')
+        except Exception:
+            message = ''
+        cf_ray = exc.headers.get('cf-ray')
+        extra = [str(message)[:500]] if message else []
+        if cf_ray:
+            extra.append('cf-ray=' + cf_ray[:120])
+        raise RuntimeError(f'外部服务返回 HTTP {exc.code}' + (('：' + '；'.join(extra)) if extra else '')) from exc
+    except (urllib.error.URLError, TimeoutError) as exc:
+        raise RuntimeError('连接外部总结服务失败') from exc
+
+
 def _call_summary(instructions, content, max_output_tokens):
-    response = _json_request(
+    configured_limit = _env('RECORDING_MAX_OUTPUT_TOKENS', _env('OPENAI_MAX_OUTPUT_TOKENS', '2500'))
+    try:
+        max_output_tokens = min(max_output_tokens, max(600, int(configured_limit)))
+    except ValueError:
+        max_output_tokens = min(max_output_tokens, 2500)
+    response = _sse_request(
         _env('OPENAI_BASE_URL').rstrip('/') + '/responses',
         {
             'model': _env('OPENAI_MODEL'),
             'instructions': instructions,
             'input': content,
-            'reasoning': {'effort': _env('OPENAI_REASONING_EFFORT', 'low')},
+            'reasoning': {'effort': _env('RECORDING_REASONING_EFFORT', 'max')},
             'max_output_tokens': max_output_tokens,
         },
         {
@@ -278,6 +343,12 @@ INTERVIEW_FINAL_PROMPT = '''你是一名严谨的求职面试复盘编辑。根�
 过滤寒暄、杂音、口头禅和无关私人对话。专有名词、数字或话语听不清时要明确标注。录音缺少开头、结尾或部分环节时，在完整性说明中如实说明。
 必须输出标准 Markdown 文档，不要使用 Markdown 代码围栏，不要在正文前后添加解释。使用二级标题“## 面试概况”“## 流程与时间线”“## 问题与回答”“## 技术题与解题过程”“## 面试官反馈与信号”“## 候选人反问及岗位信息”“## 后续安排”“## 复盘建议”“## 录音完整性说明”。问题较多时使用三级标题或有序列表；关键结论可使用粗体。没有提到的项目写“录音中未明确提及”，不要省略整个重要栏目。'''
 
+INTERVIEW_SECTION_PROMPTS = [
+    INTERVIEW_FINAL_PROMPT + '''\n这次只输出以下三个二级标题及其内容：“## 面试概况”“## 流程与时间线”“## 问题与回答”。逐项保留所有有意义的问题、回答要点和追问，不要输出其他章节。''',
+    INTERVIEW_FINAL_PROMPT + '''\n这次只输出以下四个二级标题及其内容：“## 技术题与解题过程”“## 面试官反馈与信号”“## 候选人反问及岗位信息”“## 后续安排”。不得把推测写成面试官反馈，不要输出其他章节。''',
+    INTERVIEW_FINAL_PROMPT + '''\n这次只输出以下两个二级标题及其内容：“## 复盘建议”“## 录音完整性说明”。复盘建议必须对应录音中的具体回答或表现；如实说明缺失、听不清和中断，不要输出其他章节。''',
+]
+
 
 def _chunks(text, size=12000):
     text = text.strip()
@@ -305,6 +376,13 @@ def summarize(transcript, company='', event_time='', kind='event'):
         if interview else
         f'宣讲企业或活动：{company or "未注明"}\n宣讲时间：{event_time or "未注明"}\n\n'
     )
+    if interview and len(transcript) > 8000:
+        content = context + '完整面试转写：\n' + transcript
+        limits = (1300, 1300, 800)
+        return '\n\n'.join(
+            _call_summary(prompt, content, limit)
+            for prompt, limit in zip(INTERVIEW_SECTION_PROMPTS, limits)
+        )
     if len(chunks) == 1:
         return _call_summary(final_prompt, context + '完整转写：\n' + chunks[0], 5000)
     notes = []

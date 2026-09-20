@@ -287,10 +287,10 @@ def _openai_web_search(company):
         'tools': [{'type': _env('OPENAI_WEB_SEARCH_TOOL', 'web_search')}],
         'include': ['web_search_call.action.sources'],
         'text': {'format': {'type': 'json_schema', 'name': 'company_review', 'strict': True, 'schema': schema}},
-        'reasoning': {'effort': _env('OPENAI_REASONING_EFFORT', 'low')},
+        'reasoning': {'effort': _env('OPENAI_REASONING_EFFORT', 'max')},
         'max_output_tokens': int(_env('OPENAI_MAX_OUTPUT_TOKENS', '1200')),
     }
-    response = _post_json(
+    response = _post_sse_json(
         base + '/responses', payload,
         {
             'Authorization': 'Bearer ' + _env('OPENAI_API_KEY'),
