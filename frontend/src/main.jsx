@@ -1077,8 +1077,8 @@ function PublicPage() {
           (!date || r.date === date) &&
           (eventStatus === "all" ||
             (eventStatus === "today" && r.date === today) ||
-            (eventStatus === "upcoming" && r.status !== "ended") ||
-            (eventStatus === "ended" && r.status === "ended")),
+            (eventStatus === "upcoming" && r.status !== "started" && r.status !== "ended") ||
+            (eventStatus === "past" && (r.status === "started" || r.status === "ended"))),
       );
     return records.sort(
       (a, b) =>
@@ -1276,6 +1276,7 @@ function PublicPage() {
                       { value: "upcoming", label: "待参加" },
                       { value: "today", label: "今天" },
                       { value: "all", label: "全部" },
+                      { value: "past", label: "往期" },
                     ]}
                   />
                 ) : tab === "interviews" ? (
