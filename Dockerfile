@@ -1,4 +1,5 @@
 ARG NODE_IMAGE=node:22-bookworm-slim
+ARG PYTHON_IMAGE=python:3.13-slim
 FROM ${NODE_IMAGE} AS frontend-builder
 WORKDIR /build/frontend
 COPY frontend/package.json frontend/package-lock.json ./
@@ -6,7 +7,6 @@ RUN npm ci
 COPY frontend/ ./
 RUN npm run build
 
-ARG PYTHON_IMAGE=python:3.13-slim
 FROM ${PYTHON_IMAGE}
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 TZ=Asia/Shanghai
 WORKDIR /app
