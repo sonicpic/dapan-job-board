@@ -77,6 +77,8 @@ import {
   PlayCircleOutlined,
   FileTextOutlined,
   CopyOutlined,
+  SortAscendingOutlined,
+  SortDescendingOutlined,
 } from "@ant-design/icons";
 import dayjs from "dayjs";
 import ReactMarkdown from "react-markdown";
@@ -821,7 +823,7 @@ const compareEventTime = (a, b) => {
   return a.starts_at.localeCompare(b.starts_at) || (b.source_row || 0) - (a.source_row || 0);
 };
 
-function EventList({ items, onOpen, saved, toggle, muteStartedToday = false, sortOrder = "default" }) {
+function EventList({ items, onOpen, saved, toggle, muteStartedToday = false, sortOrder = "asc" }) {
   const pinned = items.filter((r) => r.pinned);
   const regular = items.filter((r) => !r.pinned);
   const groups = Object.groupBy
@@ -972,7 +974,7 @@ function PublicPage() {
     [category, setCategory] = useState(),
     [jobStatus, setJobStatus] = useState("active"),
     [eventStatus, setEventStatus] = useState("upcoming"),
-    [eventSort, setEventSort] = useState("default"),
+    [eventSort, setEventSort] = useState("asc"),
     [mode, setMode] = useState("cards"),
     [page, setPage] = useState(1),
     [selected, setSelected] = useState(null),
@@ -1143,6 +1145,10 @@ function PublicPage() {
     setQuery("");
     setDate(null);
   };
+  const changeEventStatus = (status) => {
+    setEventStatus(status);
+    setEventSort(status === "all" || status === "past" ? "desc" : "asc");
+  };
   const reset = () => {
     setQuery("");
     setCity();
@@ -1150,7 +1156,7 @@ function PublicPage() {
     setCategory();
     setJobStatus("active");
     setEventStatus("upcoming");
-    setEventSort("default");
+    setEventSort("asc");
     setDate(null);
   };
   const configs = data?.config;
@@ -1311,7 +1317,7 @@ function PublicPage() {
                   <>
                     <Segmented
                       value={eventStatus}
-                      onChange={setEventStatus}
+                      onChange={changeEventStatus}
                       options={[
                         { value: "upcoming", label: "待参加" },
                         { value: "today", label: "今天" },
@@ -1319,17 +1325,13 @@ function PublicPage() {
                         { value: "past", label: "往期" },
                       ]}
                     />
-                    <Select
-                      className="event-sort-select"
-                      aria-label="宣讲时间排序"
-                      value={eventSort}
-                      onChange={setEventSort}
-                      options={[
-                        { value: "default", label: "默认顺序" },
-                        { value: "asc", label: "时间升序" },
-                        { value: "desc", label: "时间降序" },
-                      ]}
-                    />
+                    <Button
+                      icon={eventSort === "asc" ? <SortAscendingOutlined /> : <SortDescendingOutlined />}
+                      aria-label={`切换宣讲时间排序，当前为时间${eventSort === "asc" ? "升序" : "降序"}`}
+                      onClick={() => setEventSort((value) => value === "asc" ? "desc" : "asc")}
+                    >
+                      时间{eventSort === "asc" ? "升序" : "降序"}
+                    </Button>
                   </>
                 ) : tab === "interviews" ? (
                   <Text type="secondary">仅管理员可见</Text>
@@ -1585,7 +1587,7 @@ function PublicPage() {
                 block
                 onClick={() => {
                   changeTab("events");
-                  setEventStatus("today");
+                  changeEventStatus("today");
                 }}
               >
                 查看今日日程 <ArrowRightOutlined />

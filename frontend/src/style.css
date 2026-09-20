@@ -252,10 +252,6 @@ input {
 .filter-row > .ant-select-selector {
   font-size: 12px;
 }
-.filter-row > .event-sort-select {
-  flex: 0 0 128px;
-  min-width: 128px;
-}
 .filter-row > .ant-btn {
   font-size: 12px;
   color: #8a958b;
