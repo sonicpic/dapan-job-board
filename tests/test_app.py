@@ -108,6 +108,17 @@ def test_auth_and_origin(client):
     assert client.get('/api/admin').status_code == 401
 
 
+def test_admin_bookmarks_sync_through_account(client):
+    sync_fixture(); sign_in(client)
+    assert client.get('/api/admin/bookmarks').json() == {'ids': []}
+    assert client.put('/api/admin/bookmarks/source-job-1').status_code == 200
+    assert client.put('/api/admin/bookmarks/source-event-1').status_code == 200
+    assert client.put('/api/admin/bookmarks/missing-record').status_code == 404
+    assert set(client.get('/api/admin/bookmarks').json()['ids']) == {'source-job-1', 'source-event-1'}
+    assert client.delete('/api/admin/bookmarks/source-job-1').status_code == 200
+    assert client.get('/api/admin/bookmarks').json()['ids'] == ['source-event-1']
+
+
 def test_recording_upload_process_visibility_and_delete(client, monkeypatch):
     sync_fixture(); sign_in(client)
     path = '/api/admin/events/source-event-1/recording'

@@ -38,6 +38,7 @@ MAX_REVIEW_PENDING = 5
 MAX_AUDIO_BYTES = int(os.getenv('MAX_AUDIO_UPLOAD_MB', '500')) * 1024 * 1024
 RECORDINGS = DATA / 'recordings'
 RECORDINGS.mkdir(parents=True, exist_ok=True)
+RECORDINGS.chmod(0o700)
 ALLOWED_AUDIO_EXTENSIONS = {'.m4a', '.mp3', '.mp4', '.wav', '.aac', '.flac', '.ogg', '.webm'}
 DEFAULTS = {'title': '大潘的就业情报站', 'subtitle': '软件学院 · 校园招聘与宣讲会',
             'announcement': '信息来自学院就业共享表格。岗位要求与时间安排请以企业最新公告为准。',
@@ -120,6 +121,12 @@ def init():
           source_token_expires REAL,
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS admin_bookmarks(
+          username TEXT NOT NULL,
+          record_id TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          PRIMARY KEY(username,record_id)
         );
         ''')
         review_columns = {row['name'] for row in c.execute('PRAGMA table_info(company_reviews)')}
@@ -546,6 +553,34 @@ def session(request: Request):
     return {'admin': True, 'username': username}
 
 
+@app.get('/api/admin/bookmarks')
+def get_admin_bookmarks(request: Request):
+    username = admin(request)
+    with conn() as c:
+        ids = [row['record_id'] for row in c.execute(
+            'SELECT record_id FROM admin_bookmarks WHERE username=? ORDER BY created_at', (username,)
+        )]
+    return {'ids': ids}
+
+
+@app.put('/api/admin/bookmarks/{record_id}')
+def add_admin_bookmark(record_id: str, request: Request):
+    username = admin(request)
+    with conn() as c:
+        if not c.execute('SELECT 1 FROM records WHERE id=? AND present=1', (record_id,)).fetchone():
+            raise HTTPException(404, '信息不存在')
+        c.execute('INSERT OR IGNORE INTO admin_bookmarks VALUES(?,?,?)', (username, record_id, now()))
+    return {'ok': True}
+
+
+@app.delete('/api/admin/bookmarks/{record_id}')
+def delete_admin_bookmark(record_id: str, request: Request):
+    username = admin(request)
+    with conn() as c:
+        c.execute('DELETE FROM admin_bookmarks WHERE username=? AND record_id=?', (username, record_id))
+    return {'ok': True}
+
+
 class Login(BaseModel):
     username: str = Field(max_length=80)
     password: str = Field(max_length=256)
@@ -676,6 +711,7 @@ async def upload_recording(record_id: str, request: Request):
             raise HTTPException(409, '录音正在处理中，暂时不能替换')
     target_dir = RECORDINGS / hashlib.sha256(record_id.encode()).hexdigest()[:24]
     target_dir.mkdir(parents=True, exist_ok=True)
+    target_dir.chmod(0o700)
     target = target_dir / (uuid.uuid4().hex + extension)
     temporary = target.with_suffix(target.suffix + '.upload')
     total = 0
@@ -689,6 +725,7 @@ async def upload_recording(record_id: str, request: Request):
         if total == 0:
             raise HTTPException(422, '录音文件为空')
         temporary.replace(target)
+        target.chmod(0o600)
         with conn() as c:
             current = c.execute('SELECT * FROM event_recordings WHERE record_id=?', (record_id,)).fetchone()
             c.execute('''INSERT OR REPLACE INTO event_recordings(

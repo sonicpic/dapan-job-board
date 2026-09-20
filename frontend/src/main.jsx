@@ -779,8 +779,20 @@ function PublicPage() {
     }
   };
   useEffect(() => {
-    load();
-    api("/session").then((value) => setIsAdmin(!!value.admin)).catch(() => setIsAdmin(false));
+    const initialize = async () => {
+      try {
+        const session = await api("/session");
+        setIsAdmin(!!session.admin);
+        if (session.admin) {
+          const bookmarks = await api("/admin/bookmarks");
+          setSaved(bookmarks.ids || []);
+        }
+      } catch {
+        setIsAdmin(false);
+      }
+      await load();
+    };
+    initialize();
     const t = setInterval(load, 900000);
     const onFocus = () => {
       if (document.visibilityState === "visible") load();
@@ -797,11 +809,19 @@ function PublicPage() {
   useEffect(() => {
     if (data) document.title = data.config.title + " · 校园招聘与宣讲会";
   }, [data?.config.title]);
-  const toggle = (id) =>
+  const toggle = async (id) => {
+    const removing = saved.includes(id);
+    if (isAdmin) {
+      try {
+        await api(`/admin/bookmarks/${id}`, removing ? "DELETE" : "PUT");
+        setSaved((old) => removing ? old.filter((value) => value !== id) : [...old, id]);
+      } catch (e) {
+        message.error(e.message);
+      }
+      return;
+    }
     setSaved((old) => {
-      const next = old.includes(id)
-        ? old.filter((x) => x !== id)
-        : [...old, id];
+      const next = removing ? old.filter((value) => value !== id) : [...old, id];
       try {
         localStorage.setItem("job-bookmarks", JSON.stringify(next));
       } catch {
@@ -809,6 +829,7 @@ function PublicPage() {
       }
       return next;
     });
+  };
   const all = data?.records || [],
     jobs = all.filter((r) => r.kind === "job"),
     events = all.filter((r) => r.kind === "event"),
@@ -1042,7 +1063,7 @@ function PublicPage() {
                   />
                 ) : (
                   <Text type="secondary">
-                    {saved.length} 条收藏 · 仅在本机保存
+                    {saved.length} 条收藏 · {isAdmin ? "管理员多设备同步" : "仅在本机保存"}
                   </Text>
                 )}
                 <Button type="text" onClick={reset}>
@@ -1453,9 +1474,6 @@ function AdminPage() {
               icon={<SafetyCertificateOutlined />}
             />
             <Title level={2}>管理控制台</Title>
-            <Paragraph type="secondary">
-              维护信息，查看同步状态，让机会持续更新。
-            </Paragraph>
             <Form
               form={loginForm}
               layout="vertical"
@@ -1502,9 +1520,6 @@ function AdminPage() {
               <Form.Item name="remember" valuePropName="checked">
                 <Checkbox>在此设备保存管理员密码</Checkbox>
               </Form.Item>
-              <Paragraph type="secondary">
-                密码保存在当前浏览器中，仅建议在自己的固定设备上启用。
-              </Paragraph>
               <Button
                 type="primary"
                 htmlType="submit"
@@ -1517,9 +1532,6 @@ function AdminPage() {
             </Form>
             <div className="login-foot">
               <Link href="/">返回招聘信息</Link>
-              <Text type="secondary">
-                <SafetyCertificateOutlined /> 安全会话
-              </Text>
             </div>
           </Card>
         </div>
@@ -1775,11 +1787,7 @@ function AdminPage() {
       <main className="page admin-page">
         <div className="admin-heading">
           <div>
-            <div className="eyebrow">MANAGEMENT</div>
             <Title level={2}>管理控制台</Title>
-            <Text type="secondary">
-              管理展示内容与同步。人工调整独立保存，不回写原表。
-            </Text>
           </div>
           <Space>
             <Tag icon={<SafetyCertificateOutlined />}>{data.username}</Tag>
