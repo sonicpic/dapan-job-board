@@ -269,6 +269,15 @@ FINAL_PROMPT = '''你是一名严谨的校园招聘信息编辑。根据提供�
 只依据输入内容，不得补充常识、推算或猜测。开头提供的企业和宣讲时间只用于标识这场活动，不能用于补全年份、日期或其他录音未明确说明的事实。录音或转写存在开头/结尾缺失、中断、听不清、上下文不足时，必须在“录音完整性说明”中如实指出；无法确认的数字或专有名词也要明确标注。
 必须输出标准 Markdown 文档，不要使用 Markdown 代码围栏，不要在正文前后添加解释。使用二级标题“## 核心信息”“## 岗位与要求”“## 招聘流程与时间”“## 待遇与发展”“## 现场问答”“## 录音完整性说明”；适合并列的信息使用无序列表，步骤使用有序列表，关键时间、数字和结论可使用粗体。没有提到的项目写“录音中未明确提及”，不要省略整个重要栏目。'''
 
+INTERVIEW_EXTRACT_PROMPT = '''你正在整理一段求职面试录音的转写片段。只提取录音中明确出现、对复盘有帮助的信息。
+按发生顺序保留面试阶段、面试官问题、候选人回答要点、技术题与解题过程、追问、行为面问题、候选人反问、面试官介绍的岗位或团队信息、明确反馈、后续安排和待补充事项。
+区分事实、面试官观点和候选人自述，不替任何一方补全答案或推测评价。忽略寒暄、口头禅、重复内容、噪声和无关私人对话；听不清、录音中断或上下文缺失之处要标注。使用结构清晰的中文纯文本。'''
+
+INTERVIEW_FINAL_PROMPT = '''你是一名严谨的求职面试复盘编辑。根据面试录音转写或分段事实笔记，制作一份完整、可核对、便于后续改进的中文面试记录。
+必须保留面试流程、每一道有意义的问题、回答要点、技术题思路与结果、追问、行为面交流、候选人反问、岗位与团队信息、面试官明确表达的反馈、后续安排。对回答表现的总结必须以录音证据为依据：明确区分“录音中明确反馈”和“基于回答内容的复盘建议”，不得臆测录用倾向或面试官态度。
+过滤寒暄、杂音、口头禅和无关私人对话。专有名词、数字或话语听不清时要明确标注。录音缺少开头、结尾或部分环节时，在完整性说明中如实说明。
+必须输出标准 Markdown 文档，不要使用 Markdown 代码围栏，不要在正文前后添加解释。使用二级标题“## 面试概况”“## 流程与时间线”“## 问题与回答”“## 技术题与解题过程”“## 面试官反馈与信号”“## 候选人反问及岗位信息”“## 后续安排”“## 复盘建议”“## 录音完整性说明”。问题较多时使用三级标题或有序列表；关键结论可使用粗体。没有提到的项目写“录音中未明确提及”，不要省略整个重要栏目。'''
+
 
 def _chunks(text, size=12000):
     text = text.strip()
@@ -286,17 +295,24 @@ def _chunks(text, size=12000):
     return chunks
 
 
-def summarize(transcript, company='', event_time=''):
+def summarize(transcript, company='', event_time='', kind='event'):
     chunks = _chunks(transcript)
-    context = f'宣讲企业或活动：{company or "未注明"}\n宣讲时间：{event_time or "未注明"}\n\n'
+    interview = kind == 'interview'
+    extract_prompt = INTERVIEW_EXTRACT_PROMPT if interview else EXTRACT_PROMPT
+    final_prompt = INTERVIEW_FINAL_PROMPT if interview else FINAL_PROMPT
+    context = (
+        f'面试公司或主题：{company or "未注明"}\n面试时间：{event_time or "未注明"}\n\n'
+        if interview else
+        f'宣讲企业或活动：{company or "未注明"}\n宣讲时间：{event_time or "未注明"}\n\n'
+    )
     if len(chunks) == 1:
-        return _call_summary(FINAL_PROMPT, context + '完整转写：\n' + chunks[0], 5000)
+        return _call_summary(final_prompt, context + '完整转写：\n' + chunks[0], 5000)
     notes = []
     for index, chunk in enumerate(chunks, 1):
         notes.append(_call_summary(
-            EXTRACT_PROMPT,
+            extract_prompt,
             context + f'这是完整录音转写的第 {index}/{len(chunks)} 段：\n' + chunk,
             2500,
         ))
     joined = '\n\n'.join(f'【第 {index} 段事实笔记】\n{note}' for index, note in enumerate(notes, 1))
-    return _call_summary(FINAL_PROMPT, context + '以下是按原始顺序提取的全部分段事实笔记：\n\n' + joined, 5000)
+    return _call_summary(final_prompt, context + '以下是按原始顺序提取的全部分段事实笔记：\n\n' + joined, 5000)

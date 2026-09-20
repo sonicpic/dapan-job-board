@@ -170,7 +170,7 @@ def parse_sheet(doc,sheet,year):
                 except ValueError:pass
             identity=item['company']+'|'+(item['starts_at'] or item['time_text'])+'|'+item['location']
         digest=hashlib.sha256((item['kind']+'|'+identity).encode()).hexdigest()[:24];seen[digest]=seen.get(digest,0)+1
-        item.update(id=digest+('-'+str(seen[digest]) if seen[digest]>1 else ''),source='kdocs',source_row=rownum+1,source_sheet=sheet,hidden=False,pinned=False)
+        item.update(id=digest+('-'+str(seen[digest]) if seen[digest]>1 else ''),source='kdocs',source_row=rownum+1,source_sheet=sheet,hidden=False,visitor_visible=True,archived=False,pinned=False)
         result.append(item)
     if not result:raise ValueError('工作表没有可用记录，保留上次数据')
     return result

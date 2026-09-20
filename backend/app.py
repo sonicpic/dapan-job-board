@@ -86,6 +86,7 @@ def init():
         CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS records(id TEXT PRIMARY KEY,kind TEXT NOT NULL,source TEXT NOT NULL,data TEXT NOT NULL,present INTEGER NOT NULL DEFAULT 1);
         CREATE TABLE IF NOT EXISTS overrides(id TEXT PRIMARY KEY,data TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS deleted_records(id TEXT PRIMARY KEY,source TEXT,source_key TEXT,deleted_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS sync_logs(id INTEGER PRIMARY KEY AUTOINCREMENT,started TEXT,finished TEXT,status TEXT,jobs INTEGER,events INTEGER,changed INTEGER,message TEXT);
         CREATE TABLE IF NOT EXISTS users(username TEXT PRIMARY KEY,password TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY,username TEXT NOT NULL,expires REAL NOT NULL);
@@ -242,6 +243,16 @@ def run_sync():
         # The source may contain repeated rows. Keep one complete record for each
         # logical item before touching persistent history.
         records = list({source_record_key(item): item for item in records}.values())
+        with conn() as c:
+            deleted_ids = {row['id'] for row in c.execute('SELECT id FROM deleted_records')}
+            deleted_keys = {row['source_key'] for row in c.execute(
+                "SELECT source_key FROM deleted_records WHERE source='kdocs' AND source_key IS NOT NULL"
+            )}
+        records = [
+            item for item in records
+            if item['id'] not in deleted_ids
+            and json.dumps(source_record_key(item), ensure_ascii=False) not in deleted_keys
+        ]
         jobs = sum(x['kind'] == 'job' for x in records)
         events = len(records) - jobs
         with conn() as c:
@@ -264,6 +275,7 @@ def run_sync():
                     if len(candidates) == 1:
                         item['id'] = candidates[0]
                         break
+            records = [item for item in records if item['id'] not in deleted_ids]
             changed = 0
             for item in records:
                 body = json.dumps(item, ensure_ascii=False, sort_keys=True)
@@ -371,9 +383,9 @@ def review_worker():
             review_wake.clear()
 
 
-def recording_event(record_id):
-    for item in effective(True):
-        if item['id'] == record_id and item['kind'] == 'event':
+def recording_item(record_id):
+    for item in effective(include_invisible=True, include_archived=True, include_interviews=True):
+        if item['id'] == record_id and item['kind'] in ('event', 'interview'):
             return item
     return None
 
@@ -429,7 +441,7 @@ def process_recording_queue():
                 expires = time.time() + 86400
                 c.execute("UPDATE event_recordings SET status='transcribing',error=NULL,error_stage=NULL,error_detail=NULL,source_token_hash=?,source_token_expires=?,updated_at=? WHERE record_id=?",
                           (token_hash, expires, now(), record_id))
-        event = recording_event(record_id) or {}
+        event = recording_item(record_id) or {}
         if resume_transcript:
             stage = '生成总结'
             append_recording_log(record_id, stage, f'检测到已保存的 {len(resume_transcript)} 字转写，跳过 ASR')
@@ -454,12 +466,17 @@ def process_recording_queue():
             append_recording_log(record_id, stage, f'已保存 {len(transcript)} 字原始转写')
             stage = '生成总结'
         append_recording_log(record_id, stage, '开始调用总结模型')
-        summary = recording.summarize(transcript, event.get('company', ''), event.get('time_text', ''))
+        summary = recording.summarize(
+            transcript,
+            event.get('company', ''),
+            event.get('time_text', ''),
+            event.get('kind', 'event'),
+        )
         update_recording_status(record_id, 'completed', transcript=transcript, summary=summary,
                                 source_token_hash=None, source_token_expires=None)
         append_recording_log(record_id, '完成', f'处理完成，已保存 {len(summary)} 字 Markdown 总结')
         with conn() as c:
-            audit(c, '完成宣讲会录音转写与总结', record_id)
+            audit(c, '完成面试录音转写与总结' if event.get('kind') == 'interview' else '完成宣讲会录音转写与总结', record_id)
     except Exception as exc:
         if record_id:
             detail = '\n'.join((
@@ -513,7 +530,7 @@ async def policy(request, call_next):
             length = int(request.headers.get('content-length', '0') or '0')
         except ValueError:
             return Response('Invalid content length', 400)
-        is_audio_upload = request.method == 'POST' and re.fullmatch(r'/api/admin/events/[^/]+/recording', request.url.path)
+        is_audio_upload = request.method == 'POST' and re.fullmatch(r'/api/admin/(?:events|records)/[^/]+/recording', request.url.path)
         limit = MAX_AUDIO_BYTES if is_audio_upload else 100000
         if length > limit:
             return Response('Request too large', 413)
@@ -555,7 +572,7 @@ def recording_dict(row, detail=False):
     return result
 
 
-def effective(include_hidden=False, include_admin_recordings=False):
+def effective(include_invisible=False, include_admin_recordings=False, include_archived=False, include_interviews=False):
     with conn() as c:
         overrides = {r['id']: json.loads(r['data']) for r in c.execute('SELECT * FROM overrides')}
         rows = c.execute('SELECT * FROM records WHERE present=1').fetchall()
@@ -566,15 +583,25 @@ def effective(include_hidden=False, include_admin_recordings=False):
     instant = now()
     for row in rows:
         item = json.loads(row['data'])
-        item.update(overrides.get(row['id'], {}))
+        override = dict(overrides.get(row['id'], {}))
+        if 'hidden' in override and 'visitor_visible' not in override:
+            override['visitor_visible'] = not override['hidden']
+        item.update(override)
         item['modified'] = row['id'] in overrides
         item['review'] = company_reviews.get(item.get('company'))
-        if item.get('hidden') and not include_hidden:
+        item['visitor_visible'] = bool(item.get('visitor_visible', not item.get('hidden', False)))
+        item['archived'] = bool(item.get('archived', False))
+        item['hidden'] = not item['visitor_visible']
+        if item['kind'] == 'interview' and not include_interviews:
+            continue
+        if item['archived'] and not include_archived:
+            continue
+        if not item['visitor_visible'] and not include_invisible:
             continue
         if item['kind'] == 'job':
             deadline, start = item.get('deadline_date'), item.get('start_date')
             item['status'] = 'expired' if deadline and deadline < today else ('upcoming' if start and start > today else 'open' if deadline else 'unknown')
-        else:
+        elif item['kind'] in ('event', 'interview'):
             date, start, end = item.get('date'), item.get('starts_at'), item.get('ends_at')
             item['status'] = 'unknown' if not date else ('ended' if date < today or end and end < instant else 'today' if date == today else 'upcoming')
             if date == today and item.get('time_known') and start and start < instant and not end:
@@ -583,7 +610,7 @@ def effective(include_hidden=False, include_admin_recordings=False):
             if recording_row:
                 if include_admin_recordings:
                     item['recording'] = recording_dict(recording_row)
-                elif recording_row['summary_public'] and recording_row['summary']:
+                elif item['kind'] == 'event' and recording_row['summary_public'] and recording_row['summary']:
                     item['recording_summary'] = recording_row['summary']
         result.append(item)
     return result
@@ -597,9 +624,15 @@ def health():
 
 
 @app.get('/api/public')
-def public():
+def public(request: Request):
     cfg = settings()
-    return {'records': effective(), 'config': {k: cfg[k] for k in DEFAULTS},
+    try:
+        admin(request)
+        is_admin = True
+    except HTTPException:
+        is_admin = False
+    return {'records': effective(include_invisible=is_admin, include_interviews=is_admin),
+            'config': {k: cfg[k] for k in DEFAULTS},
             'sync': {'last_success': cfg.get('last_success'),
                      'next_sync': dt.datetime.fromtimestamp(cfg['next_sync'], TZ).isoformat() if cfg['auto_sync'] else None,
                      'has_error': bool(cfg.get('last_error')), 'running': sync_lock.locked(), 'interval_minutes': 15,
@@ -692,7 +725,8 @@ def dashboard(request: Request):
         logs = [dict(r) for r in c.execute('SELECT * FROM sync_logs ORDER BY id DESC LIMIT 100')]
         audits = [dict(r) for r in c.execute('SELECT * FROM audit ORDER BY id DESC LIMIT 50')]
         stored_reviews = {r['company']: review_dict(r, True) for r in c.execute('SELECT * FROM company_reviews')}
-    records = effective(True, True)
+    records = effective(include_invisible=True, include_admin_recordings=True,
+                        include_archived=True, include_interviews=True)
     companies = sorted(reviewable_companies(records))
     reviews = [stored_reviews.get(company) or {'company': company, 'status': 'unreviewed', 'score': None,
                                                'label': None, 'summary': None, 'pros': [], 'cons': [],
@@ -737,11 +771,11 @@ class RecordingVisibilityUpdate(BaseModel):
     public: bool
 
 
-def require_event(record_id):
-    event = recording_event(record_id)
-    if not event:
-        raise HTTPException(404, '宣讲会记录不存在')
-    return event
+def require_recordable(record_id):
+    item = recording_item(record_id)
+    if not item:
+        raise HTTPException(404, '宣讲会或面试记录不存在')
+    return item
 
 
 def safe_recording_path(value):
@@ -756,9 +790,10 @@ def safe_recording_path(value):
 
 
 @app.post('/api/admin/events/{record_id}/recording')
+@app.post('/api/admin/records/{record_id}/recording')
 async def upload_recording(record_id: str, request: Request):
     admin(request)
-    require_event(record_id)
+    subject = require_recordable(record_id)
     encoded_name = request.headers.get('x-file-name', '')
     try:
         from urllib.parse import unquote
@@ -797,7 +832,8 @@ async def upload_recording(record_id: str, request: Request):
                          VALUES(?,?,?,?,?,'uploaded',NULL,NULL,NULL,0,NULL,NULL,NULL,?,?)''',
                       (record_id, original_name[:255], str(target), request.headers.get('content-type', '')[:120],
                        total, current['created_at'] if current else now(), now()))
-            audit(c, '上传宣讲会录音' if not current else '重新上传宣讲会录音', record_id)
+            label = '面试' if subject['kind'] == 'interview' else '宣讲会'
+            audit(c, f'{"上传" if not current else "重新上传"}{label}录音', record_id)
         if current:
             old_path = Path(current['file_path'])
             if old_path != target:
@@ -816,9 +852,10 @@ async def upload_recording(record_id: str, request: Request):
 
 
 @app.get('/api/admin/events/{record_id}/recording')
+@app.get('/api/admin/records/{record_id}/recording')
 def get_recording(record_id: str, request: Request):
     admin(request)
-    require_event(record_id)
+    require_recordable(record_id)
     with conn() as c:
         row = c.execute('SELECT * FROM event_recordings WHERE record_id=?', (record_id,)).fetchone()
     if not row:
@@ -827,6 +864,7 @@ def get_recording(record_id: str, request: Request):
 
 
 @app.get('/api/admin/events/{record_id}/recording/file')
+@app.get('/api/admin/records/{record_id}/recording/file')
 def download_recording(record_id: str, request: Request):
     admin(request)
     with conn() as c:
@@ -837,17 +875,9 @@ def download_recording(record_id: str, request: Request):
                         filename=row['original_name'])
 
 
-@app.delete('/api/admin/events/{record_id}/recording')
-def delete_recording(record_id: str, request: Request):
-    admin(request)
-    with conn() as c:
-        row = c.execute('SELECT * FROM event_recordings WHERE record_id=?', (record_id,)).fetchone()
-        if not row:
-            raise HTTPException(404, '尚未上传录音')
-        if row['status'] in ('transcribing', 'summarizing'):
-            raise HTTPException(409, '录音正在处理中，暂时不能删除')
-        c.execute('DELETE FROM event_recordings WHERE record_id=?', (record_id,))
-        audit(c, '删除宣讲会录音', record_id)
+def remove_recording_files(row):
+    if not row:
+        return
     try:
         path = safe_recording_path(row['file_path'])
         recording.asr_audio_path(path).unlink(missing_ok=True)
@@ -855,13 +885,30 @@ def delete_recording(record_id: str, request: Request):
         path.parent.rmdir()
     except (HTTPException, OSError):
         pass
+
+
+@app.delete('/api/admin/events/{record_id}/recording')
+@app.delete('/api/admin/records/{record_id}/recording')
+def delete_recording(record_id: str, request: Request):
+    admin(request)
+    subject = require_recordable(record_id)
+    with conn() as c:
+        row = c.execute('SELECT * FROM event_recordings WHERE record_id=?', (record_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, '尚未上传录音')
+        if row['status'] in ('transcribing', 'summarizing'):
+            raise HTTPException(409, '录音正在处理中，暂时不能删除')
+        c.execute('DELETE FROM event_recordings WHERE record_id=?', (record_id,))
+        audit(c, '删除面试录音' if subject['kind'] == 'interview' else '删除宣讲会录音', record_id)
+    remove_recording_files(row)
     return {'ok': True}
 
 
 @app.post('/api/admin/events/{record_id}/recording/process')
+@app.post('/api/admin/records/{record_id}/recording/process')
 def start_recording_process(record_id: str, request: Request):
     admin(request)
-    require_event(record_id)
+    subject = require_recordable(record_id)
     cfg = recording.config()
     if not cfg['configured']:
         raise HTTPException(409, '录音处理服务尚未配置完整：' + '、'.join(cfg['missing']))
@@ -872,15 +919,18 @@ def start_recording_process(record_id: str, request: Request):
         if row['status'] in ('queued', 'transcribing', 'summarizing'):
             raise HTTPException(409, '这份录音已在处理队列中')
         c.execute("UPDATE event_recordings SET status='queued',error=NULL,error_stage=NULL,error_detail=NULL,updated_at=? WHERE record_id=?", (now(), record_id))
-        audit(c, '启动宣讲会录音处理', record_id)
+        audit(c, '启动面试录音处理' if subject['kind'] == 'interview' else '启动宣讲会录音处理', record_id)
     append_recording_log(record_id, '排队', '管理员已启动录音处理')
     recording_wake.set()
     return {'ok': True}
 
 
 @app.put('/api/admin/events/{record_id}/recording/visibility')
+@app.put('/api/admin/records/{record_id}/recording/visibility')
 def update_recording_visibility(record_id: str, body: RecordingVisibilityUpdate, request: Request):
     admin(request)
+    if require_recordable(record_id)['kind'] != 'event':
+        raise HTTPException(409, '面试记录仅管理员可见，无需设置公开总结')
     with conn() as c:
         row = c.execute('SELECT summary FROM event_recordings WHERE record_id=?', (record_id,)).fetchone()
         if not row:
@@ -949,7 +999,7 @@ def reviewable_companies(records=None):
         item.get('company', '').strip()
         for item in records
         if item.get('company', '').strip()
-        and (item.get('kind') == 'job' or item.get('status') != 'ended')
+        and (item.get('kind') == 'job' or item.get('kind') == 'event' and item.get('status') != 'ended')
     }
 
 
@@ -1040,14 +1090,15 @@ def update_settings(body: SettingsUpdate, request: Request):
 
 
 ALLOWED = {'company', 'category', 'positions', 'location', 'education', 'salary', 'method', 'application',
-           'apply_url', 'announcement_url', 'notes', 'updated', 'deadline', 'start', 'time_text', 'hidden', 'pinned'}
+           'apply_url', 'announcement_url', 'notes', 'updated', 'deadline', 'start', 'time_text',
+           'visitor_visible', 'archived', 'hidden', 'pinned', 'interview_stage', 'result'}
 
 
 def validated_patch(patch, kind):
     if set(patch) - ALLOWED:
         raise HTTPException(422, '包含不允许修改的字段')
     for k, v in patch.items():
-        if k in ('hidden', 'pinned'):
+        if k in ('hidden', 'visitor_visible', 'archived', 'pinned'):
             if not isinstance(v, bool):
                 raise HTTPException(422, '状态必须为布尔值')
         elif not isinstance(v, str) or len(v) > 10000:
@@ -1066,7 +1117,7 @@ def validated_patch(patch, kind):
     if 'time_text' in patch:
         value = normalize_date(patch['time_text'], year, True)
         if not value:
-            raise HTTPException(422, '宣讲会时间请包含完整日期')
+            raise HTTPException(422, '时间请包含完整日期')
         patch.update(starts_at=value, date=value[:10], time_known=bool(re.search(r'\d[:：]\d', patch['time_text'])), ends_at=None)
         times = re.findall(r'(\d{1,2})\s*[:：]\s*(\d{2})', patch['time_text'])
         if len(times) > 1:
@@ -1101,18 +1152,45 @@ def reset_record(record_id: str, request: Request):
     return {'ok': True}
 
 
+@app.delete('/api/admin/records/{record_id}')
+def delete_record(record_id: str, request: Request):
+    admin(request)
+    recording_row = None
+    with conn() as c:
+        row = c.execute('SELECT * FROM records WHERE id=? AND present=1', (record_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, '记录不存在')
+        recording_row = c.execute('SELECT * FROM event_recordings WHERE record_id=?', (record_id,)).fetchone()
+        if recording_row and recording_row['status'] in ('queued', 'transcribing', 'summarizing'):
+            raise HTTPException(409, '录音正在处理中，暂时不能删除这条记录')
+        item = json.loads(row['data'])
+        if row['source'] == 'kdocs':
+            c.execute('INSERT OR REPLACE INTO deleted_records VALUES(?,?,?,?)',
+                      (record_id, row['source'], json.dumps(source_record_key(item), ensure_ascii=False), now()))
+            c.execute('UPDATE records SET present=0 WHERE id=?', (record_id,))
+        else:
+            c.execute('DELETE FROM records WHERE id=?', (record_id,))
+        c.execute('DELETE FROM overrides WHERE id=?', (record_id,))
+        c.execute('DELETE FROM admin_bookmarks WHERE record_id=?', (record_id,))
+        c.execute('DELETE FROM event_recordings WHERE record_id=?', (record_id,))
+        audit(c, '删除信息', record_id)
+    remove_recording_files(recording_row)
+    return {'ok': True}
+
+
 @app.post('/api/admin/records')
 def add_record(body: dict, request: Request):
     admin(request)
     kind = body.pop('kind', None)
-    if kind not in ('job', 'event'):
+    if kind not in ('job', 'event', 'interview'):
         raise HTTPException(422, '类型不正确')
-    if not body.get('company') or kind == 'event' and not body.get('time_text'):
-        raise HTTPException(422, '请填写单位名称和必要的宣讲会时间')
+    if not body.get('company') or kind in ('event', 'interview') and not body.get('time_text'):
+        raise HTTPException(422, '请填写名称和必要的时间')
     patch = validated_patch(body, kind)
     rid = 'manual-' + uuid.uuid4().hex
     record = {'id': rid, 'kind': kind, 'source': 'manual', 'source_sheet': '人工补充', 'source_row': None,
-              'hidden': False, 'pinned': False, 'updated': dt.datetime.now(TZ).date().isoformat(), **patch}
+              'hidden': kind == 'interview', 'visitor_visible': kind != 'interview', 'archived': False,
+              'pinned': False, 'updated': dt.datetime.now(TZ).date().isoformat(), **patch}
     with conn() as c:
         c.execute('INSERT INTO records VALUES(?,?,?,?,1)', (rid, kind, 'manual', json.dumps(record, ensure_ascii=False)))
         audit(c, '新增信息', rid)

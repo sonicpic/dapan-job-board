@@ -302,7 +302,10 @@ def test_source_drop_preserves_previous_records_without_sync_error(client):
 def test_overrides_survive_sync_and_changed_link(client):
     sync_fixture();sign_in(client)
     assert client.patch('/api/admin/records/source-job-1',json={'positions':'管理员补充','pinned':True,'hidden':True}).status_code == 200
-    assert len(client.get('/api/public').json()['records']) == 1
+    # An authenticated administrator can still see visitor-hidden records on the front page.
+    assert len(client.get('/api/public').json()['records']) == 2
+    visitor = TestClient(app.app, base_url='https://jobs.example.com', headers={'X-Requested-With': 'job-board'})
+    assert len(visitor.get('/api/public').json()['records']) == 1
     changed=fixture_items();changed[0].update(id='new-source-job-id',apply_url='https://example.com/new-jobs',positions='上游新内容')
     sync_fixture(changed)
     records=client.get('/api/admin').json()['records']
@@ -312,6 +315,94 @@ def test_overrides_survive_sync_and_changed_link(client):
     client.delete('/api/admin/records/source-job-1/override')
     assert len(client.get('/api/public').json()['records']) == 2
     assert next(r for r in client.get('/api/public').json()['records'] if r['kind']=='job')['positions']=='上游新内容'
+
+
+def test_visibility_archive_interview_and_pin_rules(client):
+    sync_fixture(); sign_in(client)
+    job_id = 'source-job-1'
+    assert client.patch(f'/api/admin/records/{job_id}', json={
+        'visitor_visible': False, 'pinned': True,
+    }).status_code == 200
+    admin_public = client.get('/api/public').json()['records']
+    assert any(item['id'] == job_id and item['pinned'] for item in admin_public)
+    visitor = TestClient(app.app, base_url='https://jobs.example.com', headers={'X-Requested-With': 'job-board'})
+    assert all(item['id'] != job_id for item in visitor.get('/api/public').json()['records'])
+
+    assert client.patch(f'/api/admin/records/{job_id}', json={'archived': True}).status_code == 200
+    assert all(item['id'] != job_id for item in client.get('/api/public').json()['records'])
+    dashboard_job = next(item for item in client.get('/api/admin').json()['records'] if item['id'] == job_id)
+    assert dashboard_job['archived'] is True and dashboard_job['visitor_visible'] is False
+
+    created = client.post('/api/admin/records', json={
+        'kind': 'interview', 'company': '示例公司面试', 'positions': '后端工程师',
+        'time_text': '2026-09-20 15:00', 'interview_stage': '一面',
+    })
+    assert created.status_code == 200
+    interview_id = created.json()['id']
+    assert any(item['id'] == interview_id for item in client.get('/api/public').json()['records'])
+    assert all(item['id'] != interview_id for item in visitor.get('/api/public').json()['records'])
+
+
+def test_delete_source_record_creates_tombstone_and_manual_delete_is_permanent(client):
+    sync_fixture(); sign_in(client)
+    assert client.delete('/api/admin/records/source-job-1').status_code == 200
+    sync_fixture()
+    assert all(item['id'] != 'source-job-1' for item in client.get('/api/admin').json()['records'])
+    with app.conn() as c:
+        assert c.execute('SELECT 1 FROM deleted_records WHERE id=?', ('source-job-1',)).fetchone()
+
+    created = client.post('/api/admin/records', json={
+        'kind': 'job', 'company': '待删除人工记录', 'positions': '测试岗位',
+    })
+    manual_id = created.json()['id']
+    assert client.delete(f'/api/admin/records/{manual_id}').status_code == 200
+    with app.conn() as c:
+        assert not c.execute('SELECT 1 FROM records WHERE id=?', (manual_id,)).fetchone()
+
+
+def test_delete_record_removes_recording_metadata_and_file(client):
+    sync_fixture(); sign_in(client)
+    path = '/api/admin/records/source-event-1/recording'
+    assert client.post(path, content=b'fake-audio', headers={
+        'Content-Type': 'audio/mp4', 'X-File-Name': 'talk.m4a',
+    }).status_code == 200
+    with app.conn() as c:
+        recording_path = Path(c.execute(
+            'SELECT file_path FROM event_recordings WHERE record_id=?', ('source-event-1',)
+        ).fetchone()['file_path'])
+    assert recording_path.is_file()
+    assert client.delete('/api/admin/records/source-event-1').status_code == 200
+    assert not recording_path.exists()
+    with app.conn() as c:
+        assert not c.execute('SELECT 1 FROM event_recordings WHERE record_id=?', ('source-event-1',)).fetchone()
+
+
+def test_interview_recording_uses_interview_summary_prompt(client, monkeypatch):
+    sign_in(client)
+    created = client.post('/api/admin/records', json={
+        'kind': 'interview', 'company': '示例面试', 'positions': '算法工程师',
+        'time_text': '2026-09-20 16:00', 'interview_stage': '技术面',
+    })
+    record_id = created.json()['id']
+    path = f'/api/admin/records/{record_id}/recording'
+    assert client.post(path, content=b'fake-audio', headers={
+        'Content-Type': 'audio/mp4', 'X-File-Name': 'interview.m4a',
+    }).status_code == 200
+    monkeypatch.setenv('ASR_DASHSCOPE_API_KEY', 'test-asr-key')
+    monkeypatch.setenv('OPENAI_API_KEY', 'test-summary-key')
+    monkeypatch.setenv('OPENAI_BASE_URL', 'https://model.example/v1')
+    monkeypatch.setenv('OPENAI_MODEL', 'gpt-5.6-luna')
+    assert client.post(path + '/process').status_code == 200
+    with patch.object(recording, 'prepare_asr_audio'), \
+         patch.object(recording, 'submit_asr', return_value='task-interview'), \
+         patch.object(recording, 'wait_asr', return_value={'task_status': 'SUCCEEDED'}), \
+         patch.object(recording, 'fetch_transcript', return_value='面试官：介绍项目。候选人：这是项目经历。'), \
+         patch.object(recording, 'summarize', return_value='## 问题与回答\n总结') as summarize:
+        assert app.process_recording_queue() is True
+    assert summarize.call_args.args[3] == 'interview'
+    assert client.put(path + '/visibility', json={'public': True}).status_code == 409
+    assert '## 问题与回答' in recording.INTERVIEW_FINAL_PROMPT
+    assert '## 复盘建议' in recording.INTERVIEW_FINAL_PROMPT
 
 
 def test_manual_and_source_history_survives_upstream_removal(client):
