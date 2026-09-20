@@ -68,7 +68,6 @@ import {
   MailOutlined,
   EyeOutlined,
   EyeInvisibleOutlined,
-  InfoCircleOutlined,
   RadarChartOutlined,
   LinkOutlined,
   BellOutlined,
@@ -185,29 +184,37 @@ async function api(path, method = "GET", body) {
   }
   return data;
 }
-async function uploadAudio(path, file) {
-  const r = await fetch("/api" + path, {
-    method: "POST",
-    credentials: "same-origin",
-    headers: {
-      "Content-Type": file.type || "application/octet-stream",
-      "X-File-Name": encodeURIComponent(file.name),
-      "X-Requested-With": "job-board",
-    },
-    body: file,
+function uploadAudio(path, file, onProgress) {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open("POST", "/api" + path);
+    request.withCredentials = true;
+    request.setRequestHeader("Content-Type", file.type || "application/octet-stream");
+    request.setRequestHeader("X-File-Name", encodeURIComponent(file.name));
+    request.setRequestHeader("X-Requested-With", "job-board");
+    request.upload.onprogress = (event) => {
+      if (event.lengthComputable) onProgress?.(Math.min(100, Math.round(event.loaded / event.total * 100)));
+    };
+    request.onload = () => {
+      let data = {};
+      try {
+        data = JSON.parse(request.responseText || "{}");
+      } catch {
+        data = { detail: request.status === 413 ? "录音文件过大" : "上传失败，请稍后重试" };
+      }
+      if (request.status >= 200 && request.status < 300) {
+        onProgress?.(100);
+        resolve(data);
+      } else {
+        const error = new Error(data.detail || "上传失败，请稍后重试");
+        error.status = request.status;
+        reject(error);
+      }
+    };
+    request.onerror = () => reject(new Error("上传连接中断，请检查网络后重试"));
+    request.onabort = () => reject(new Error("上传已取消"));
+    request.send(file);
   });
-  let data = {};
-  try {
-    data = await r.json();
-  } catch {
-    data = { detail: r.status === 413 ? "录音文件过大" : "上传失败，请稍后重试" };
-  }
-  if (!r.ok) {
-    const error = new Error(data.detail || "上传失败，请稍后重试");
-    error.status = r.status;
-    throw error;
-  }
-  return data;
 }
 function sourceButton(source) {
   return (
@@ -276,6 +283,7 @@ function RecordingManager({ record, initial, onChanged }) {
   const [data, setData] = useState(initial || null);
   const [loading, setLoading] = useState(!initial);
   const [busy, setBusy] = useState(false);
+  const [uploadPercent, setUploadPercent] = useState(null);
   const load = async () => {
     if (!record?.id) return;
     try {
@@ -310,25 +318,24 @@ function RecordingManager({ record, initial, onChanged }) {
       setBusy(false);
     }
   };
+  const startUpload = async (file, success) => {
+    setBusy(true);
+    setUploadPercent(0);
+    try {
+      await uploadAudio(`/admin/events/${record.id}/recording`, file, setUploadPercent);
+      message.success(success);
+      await load();
+      onChanged?.();
+    } catch (e) {
+      message.error(e.message);
+    } finally {
+      setBusy(false);
+      setUploadPercent(null);
+    }
+  };
   if (loading) return <Skeleton active paragraph={{ rows: 3 }} />;
   const running = ["queued", "transcribing", "summarizing"].includes(data?.status);
   const [statusLabel, statusColor] = recordingStatus[data?.status] || ["未上传", "default"];
-  const showAndroidHelp = () => Modal.info({
-    title: "澎湃 OS 上传录音",
-    width: 520,
-    okText: "知道了",
-    content: (
-      <div className="android-upload-help">
-        <Paragraph>系统会禁止网页读取 <Text code>Android/data</Text>，请先把录音导出到公共目录：</Paragraph>
-        <ol>
-          <li>在系统录音机中打开录音列表，选择已经录好的文件。</li>
-          <li>使用“分享”“导出”或“保存到文件”，保存到“下载 / Download”目录。</li>
-          <li>回到本页面点击上传，选择“文件”并从“下载”目录选取。</li>
-        </ol>
-        <Paragraph type="secondary">不要在上传窗口中选择“录音机”，该入口会新建录音。如果系统录音机没有导出选项，可先发送到电脑，再从后台上传。</Paragraph>
-      </div>
-    ),
-  });
   return (
     <Card size="small" className="recording-manager">
       <div className="recording-manager-head">
@@ -358,13 +365,12 @@ function RecordingManager({ record, initial, onChanged }) {
               showUploadList={false}
               disabled={busy || running}
               beforeUpload={(file) => {
-                act(() => uploadAudio(`/admin/events/${record.id}/recording`, file), "录音已重新上传");
+                startUpload(file, "录音已重新上传");
                 return false;
               }}
             >
               <Button icon={<UploadOutlined />} loading={busy} disabled={running}>重新上传</Button>
             </Upload>
-            <Button type="link" icon={<InfoCircleOutlined />} onClick={showAndroidHelp}>手机上传说明</Button>
             <Button
               type="primary"
               icon={<PlayCircleOutlined />}
@@ -382,6 +388,9 @@ function RecordingManager({ record, initial, onChanged }) {
               <Button danger icon={<DeleteOutlined />} disabled={busy || running}>删除</Button>
             </Popconfirm>
           </Space>
+          {uploadPercent !== null && (
+            <Progress percent={uploadPercent} status={uploadPercent === 100 ? "success" : "active"} format={(value) => `上传 ${value}%`} />
+          )}
           {data.summary && (
             <div className="recording-visibility">
               <Text strong>访客可查看“宣讲会总结”</Text>
@@ -421,7 +430,7 @@ function RecordingManager({ record, initial, onChanged }) {
             showUploadList={false}
             disabled={busy}
             beforeUpload={(file) => {
-              act(() => uploadAudio(`/admin/events/${record.id}/recording`, file), "录音已上传");
+              startUpload(file, "录音已上传");
               return false;
             }}
           >
@@ -429,7 +438,9 @@ function RecordingManager({ record, initial, onChanged }) {
             <p>点击或拖拽上传录音</p>
             <Text type="secondary">支持 M4A、MP3、MP4、WAV、AAC、FLAC、OGG、WebM，最大 500 MB</Text>
           </Upload.Dragger>
-          <Button type="link" icon={<InfoCircleOutlined />} onClick={showAndroidHelp}>澎湃 OS 无法找到录音？</Button>
+          {uploadPercent !== null && (
+            <Progress percent={uploadPercent} status={uploadPercent === 100 ? "success" : "active"} format={(value) => `上传 ${value}%`} />
+          )}
         </>
       )}
     </Card>
