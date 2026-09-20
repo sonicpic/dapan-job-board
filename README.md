@@ -135,10 +135,10 @@ python3 -m venv .venv
 
 ## 备份与恢复
 
-`job-board-backup.timer` 每日北京时间 03:20 左右执行 SQLite 在线一致性备份并检查完整性，保留最近 14 份，位置为 `/opt/job-board/backups`。备份含密码哈希、设置和会话信息，仅 root 可读。它是同机恢复副本，服务器损坏时仍需另行使用腾讯云快照或异地备份。
+`job-board-backup.timer` 每日北京时间 03:20 左右执行 SQLite 在线一致性备份并检查完整性，保留最近 14 份，位置为项目目录下的 `backups`。备份脚本默认从自身路径识别项目根目录，也可用 `JOB_BOARD_ROOT` 指定。备份含密码哈希、设置和会话信息，应仅允许管理员读取。它是同机恢复副本，主机损坏时仍需另行保留异地备份。
 
 ```bash
-python3 /opt/job-board/scripts/backup.py
+python3 scripts/backup.py
 systemctl list-timers job-board-backup.timer
 ```
 

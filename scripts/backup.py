@@ -4,7 +4,7 @@ import os
 import sqlite3
 from pathlib import Path
 
-root = Path('/opt/job-board')
+root = Path(os.environ.get('JOB_BOARD_ROOT', Path(__file__).resolve().parents[1]))
 directory = root / 'backups'
 directory.mkdir(mode=0o700, exist_ok=True)
 os.umask(0o077)

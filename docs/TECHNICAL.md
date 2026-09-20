@@ -74,11 +74,11 @@ API 密钥只保存在服务器 `/opt/job-board/.env`，不写入数据库、前
 
 登录页可在私人固定设备上保存管理员账号和密码。该信息仅保存在当前浏览器的本地存储中，取消勾选或成功修改管理员密码后会清除。
 
-容器以非 root 用户运行，根文件系统只读，仅挂载 `data` 目录用于持久化。应用只监听服务器本机的 `127.0.0.1:18080`，由 Nginx 对外提供服务。
+容器以非 root 用户运行，根文件系统只读，仅挂载 `data` 目录用于持久化。应用只监听服务器本机的 `127.0.0.1:${HOST_PORT}`，默认端口为 `18080`，由入口反向代理对外提供服务。
 
 ## 6. 部署与访问
 
-服务器项目目录为 `/opt/job-board`，访问入口为：
+部署目录可按服务器环境选择；端口通过私有 `.env` 的 `HOST_PORT` 配置，无需修改 Compose 文件。访问入口为：
 
 - 域名：`https://example.com/`
 - IP 备用入口：`http://YOUR_SERVER_IP/`
@@ -92,7 +92,7 @@ cd /opt/job-board
 docker compose up -d --build
 docker compose ps
 docker compose logs --tail=100 app
-curl -fsS http://127.0.0.1:18080/api/health
+curl -fsS "http://127.0.0.1:${HOST_PORT:-18080}/api/health"
 ```
 
 前端构建与后端测试：
@@ -105,7 +105,7 @@ cd /opt/job-board
 .venv/bin/pytest tests -q
 ```
 
-SQLite 每日生成一致性备份并保留最近 14 份，备份目录为 `/opt/job-board/backups`。
+SQLite 每日生成一致性备份并保留最近 14 份，备份目录为项目下的 `backups`。备份脚本默认从自身位置识别项目根目录，也可通过 `JOB_BOARD_ROOT` 指定。
 
 ## 7. 维护注意事项
 
