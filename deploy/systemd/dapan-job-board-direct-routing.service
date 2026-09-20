@@ -1,0 +1,13 @@
+[Unit]
+Description=Direct physical routing for Dapan Job Board container
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/dapan-job-board-direct-routing
+ExecStop=/usr/local/sbin/dapan-job-board-direct-routing --remove
+
+[Install]
+WantedBy=multi-user.target

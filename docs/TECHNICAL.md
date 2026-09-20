@@ -107,7 +107,7 @@ cd /home/zhihongpan/services/dapan-job-board
 
 SQLite 每日生成一致性备份并保留最近 14 份，备份目录为项目下的 `backups`。备份脚本默认从自身位置识别项目根目录，也可通过 `JOB_BOARD_ROOT` 指定。
 
-当前 WSL 部署位于 `/home/zhihongpan/services/dapan-job-board`，使用 `127.0.0.1:58112`。由于 Clash TUN 的 fake-IP 对 Docker bridge 只有部分目标可达，生产运行叠加 `compose.wsl.yaml` 使用 host 网络，并把 Uvicorn 明确限制在 WSL 回环地址。`deploy/systemd` 保存开机启动与每日备份单元，`deploy/nginx/job.dapanclaw.top.conf` 保存 AWS 入口反代模板。Windows 计划任务 `Dapan Job Board WSL Startup` 在用户登录时启动 Ubuntu，使 WSL systemd 接着拉起 Compose；源腾讯云容器保持停止，作为迁移后的短期回滚副本。
+当前 WSL 部署位于 `/home/zhihongpan/services/dapan-job-board`，使用 `127.0.0.1:58112`。由于 Clash TUN 的 fake-IP 对 Docker bridge 只有部分目标可达，生产运行叠加 `compose.wsl.yaml` 使用 host 网络，并把 Uvicorn 明确限制在 WSL 回环地址。独立的 systemd 路由单元按应用 UID 10001 动态识别物理 IPv4 网关，让容器使用公共 DNS 并绕过 Clash 代理节点；其他 WSL 程序继续遵循 Clash。`deploy/systemd` 保存开机启动、直连路由与每日备份单元，`deploy/nginx/job.dapanclaw.top.conf` 保存 AWS 入口反代模板。Windows 计划任务 `Dapan Job Board WSL Startup` 在用户登录时启动 Ubuntu，使 WSL systemd 接着拉起 Compose；源腾讯云容器保持停止，作为迁移后的短期回滚副本。
 
 ## 7. 维护注意事项
 

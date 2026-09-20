@@ -1,7 +1,8 @@
 [Unit]
 Description=Dapan Job Board Docker Compose
 Requires=docker.service
-After=docker.service network-online.target
+Wants=dapan-job-board-direct-routing.service
+After=docker.service network-online.target dapan-job-board-direct-routing.service
 
 [Service]
 Type=oneshot
