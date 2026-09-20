@@ -1,0 +1,8 @@
+[Unit]
+Description=Back up campus job board SQLite database
+
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+ExecStart=/usr/bin/python3 /opt/job-board/scripts/backup.py

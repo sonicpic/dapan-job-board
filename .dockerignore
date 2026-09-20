@@ -1,0 +1,8 @@
+*
+!backend/
+!backend/**
+!frontend/
+!frontend/dist/
+!frontend/dist/**
+!Dockerfile
+backend/__pycache__/

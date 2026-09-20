@@ -1,0 +1,56 @@
+services:
+  app:
+    build: .
+    image: campus-job-board:latest
+    container_name: campus-job-board
+    restart: unless-stopped
+    init: true
+    ports:
+      - "127.0.0.1:18080:8000"
+    volumes:
+      - ./data:/app/data
+    environment:
+      APP_ORIGIN: ${APP_ORIGIN:-http://localhost:8000}
+      APP_ORIGINS: ${APP_ORIGINS:-}
+      TZ: Asia/Shanghai
+      KDOCS_SOURCE_URL: ${KDOCS_SOURCE_URL:-https://www.kdocs.cn/l/EXAMPLE}
+      REVIEW_MODE: ${REVIEW_MODE:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-}
+      OPENAI_WEB_SEARCH_TOOL: ${OPENAI_WEB_SEARCH_TOOL:-}
+      OPENAI_PROVIDER_NAME: ${OPENAI_PROVIDER_NAME:-}
+      OPENAI_USER_AGENT: ${OPENAI_USER_AGENT:-}
+      OPENAI_REASONING_EFFORT: ${OPENAI_REASONING_EFFORT:-}
+      OPENAI_MAX_OUTPUT_TOKENS: ${OPENAI_MAX_OUTPUT_TOKENS:-}
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      TAVILY_BASE_URL: ${TAVILY_BASE_URL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
+      BAILIAN_BASE_URL: ${BAILIAN_BASE_URL:-}
+      BAILIAN_MODEL: ${BAILIAN_MODEL:-}
+      BAILIAN_ENABLE_THINKING: ${BAILIAN_ENABLE_THINKING:-}
+      PUSHPLUS_TOKEN: ${PUSHPLUS_TOKEN:-}
+      PUSHPLUS_BASE_URL: ${PUSHPLUS_BASE_URL:-}
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 384m
+    cpus: 1
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health',timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
