@@ -8,6 +8,7 @@ import secrets
 import sqlite3
 import threading
 import time
+import traceback
 import urllib.error
 import urllib.request
 import uuid
@@ -117,6 +118,9 @@ def init():
           summary TEXT,
           summary_public INTEGER NOT NULL DEFAULT 0,
           error TEXT,
+          error_stage TEXT,
+          error_detail TEXT,
+          process_log TEXT NOT NULL DEFAULT '[]',
           source_token_hash TEXT,
           source_token_expires REAL,
           created_at TEXT NOT NULL,
@@ -132,6 +136,13 @@ def init():
         review_columns = {row['name'] for row in c.execute('PRAGMA table_info(company_reviews)')}
         if 'usage' not in review_columns:
             c.execute("ALTER TABLE company_reviews ADD COLUMN usage TEXT NOT NULL DEFAULT '{}'")
+        recording_columns = {row['name'] for row in c.execute('PRAGMA table_info(event_recordings)')}
+        if 'error_stage' not in recording_columns:
+            c.execute('ALTER TABLE event_recordings ADD COLUMN error_stage TEXT')
+        if 'error_detail' not in recording_columns:
+            c.execute('ALTER TABLE event_recordings ADD COLUMN error_detail TEXT')
+        if 'process_log' not in recording_columns:
+            c.execute("ALTER TABLE event_recordings ADD COLUMN process_log TEXT NOT NULL DEFAULT '[]'")
         c.execute("UPDATE sync_logs SET status='error',finished=?,message='服务重新启动，同步将重试' WHERE status='running'", (now(),))
         c.execute("UPDATE company_reviews SET status='queued',error='服务重新启动，分析将重试' WHERE status='running'")
         c.execute("UPDATE event_recordings SET status='queued',error='服务重新启动，录音处理将重试' WHERE status IN ('transcribing','summarizing')")
@@ -367,10 +378,24 @@ def recording_event(record_id):
     return None
 
 
-def update_recording_status(record_id, status, error=None, **values):
+def append_recording_log(record_id, stage, message):
+    with conn() as c:
+        row = c.execute('SELECT process_log FROM event_recordings WHERE record_id=?', (record_id,)).fetchone()
+        if not row:
+            return
+        try:
+            entries = json.loads(row['process_log'] or '[]')
+        except (TypeError, json.JSONDecodeError):
+            entries = []
+        entries.append({'at': now(), 'stage': stage, 'message': str(message)[:500]})
+        c.execute('UPDATE event_recordings SET process_log=? WHERE record_id=?',
+                  (json.dumps(entries[-40:], ensure_ascii=False), record_id))
+
+
+def update_recording_status(record_id, status, error=None, error_stage=None, error_detail=None, **values):
     allowed = {'asr_task_id', 'transcript', 'summary', 'source_token_hash', 'source_token_expires'}
-    assignments = ['status=?', 'error=?', 'updated_at=?']
-    params = [status, error, now()]
+    assignments = ['status=?', 'error=?', 'error_stage=?', 'error_detail=?', 'updated_at=?']
+    params = [status, error, error_stage, error_detail, now()]
     for key, value in values.items():
         if key not in allowed:
             continue
@@ -386,6 +411,7 @@ def process_recording_queue():
     if not cfg['configured'] or not recording_lock.acquire(blocking=False):
         return False
     record_id = None
+    stage = '领取任务'
     try:
         with conn() as c:
             c.execute('BEGIN IMMEDIATE')
@@ -395,35 +421,58 @@ def process_recording_queue():
             record_id = row['record_id']
             resume_transcript = row['transcript'] if row['transcript'] and not row['summary'] else None
             if resume_transcript:
-                c.execute("UPDATE event_recordings SET status='summarizing',error=NULL,source_token_hash=NULL,source_token_expires=NULL,updated_at=? WHERE record_id=?",
+                c.execute("UPDATE event_recordings SET status='summarizing',error=NULL,error_stage=NULL,error_detail=NULL,source_token_hash=NULL,source_token_expires=NULL,updated_at=? WHERE record_id=?",
                           (now(), record_id))
             else:
                 raw_token = secrets.token_urlsafe(40)
                 token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
                 expires = time.time() + 86400
-                c.execute("UPDATE event_recordings SET status='transcribing',error=NULL,source_token_hash=?,source_token_expires=?,updated_at=? WHERE record_id=?",
+                c.execute("UPDATE event_recordings SET status='transcribing',error=NULL,error_stage=NULL,error_detail=NULL,source_token_hash=?,source_token_expires=?,updated_at=? WHERE record_id=?",
                           (token_hash, expires, now(), record_id))
         event = recording_event(record_id) or {}
         if resume_transcript:
+            stage = '生成总结'
+            append_recording_log(record_id, stage, f'检测到已保存的 {len(resume_transcript)} 字转写，跳过 ASR')
             transcript = resume_transcript
         else:
+            stage = '准备音频'
+            append_recording_log(record_id, stage, '开始生成 16 kHz 单声道 ASR 副本')
             origin = (os.getenv('ASR_PUBLIC_ORIGIN', '').strip() or ORIGIN).rstrip('/')
             source_url = f'{origin}/api/recordings/source/{raw_token}'
             recording.prepare_asr_audio(row['file_path'])
+            append_recording_log(record_id, stage, '单声道 ASR 副本准备完成')
+            stage = '提交转写'
             task_id = recording.submit_asr(source_url)
+            append_recording_log(record_id, stage, f'百炼任务已提交（任务号尾号 {task_id[-8:]}）')
             update_recording_status(record_id, 'transcribing', asr_task_id=task_id)
+            stage = '等待转写'
             output = recording.wait_asr(task_id)
+            append_recording_log(record_id, stage, '百炼转写任务已完成，开始读取结果')
             transcript = recording.fetch_transcript(output)
             update_recording_status(record_id, 'summarizing', transcript=transcript,
                                     source_token_hash=None, source_token_expires=None)
+            append_recording_log(record_id, stage, f'已保存 {len(transcript)} 字原始转写')
+            stage = '生成总结'
+        append_recording_log(record_id, stage, '开始调用总结模型')
         summary = recording.summarize(transcript, event.get('company', ''), event.get('time_text', ''))
         update_recording_status(record_id, 'completed', transcript=transcript, summary=summary,
                                 source_token_hash=None, source_token_expires=None)
+        append_recording_log(record_id, '完成', f'处理完成，已保存 {len(summary)} 字 Markdown 总结')
         with conn() as c:
             audit(c, '完成宣讲会录音转写与总结', record_id)
     except Exception as exc:
         if record_id:
-            update_recording_status(record_id, 'error', str(exc)[:800],
+            detail = '\n'.join((
+                f'失败时间：{now()}',
+                f'失败阶段：{stage}',
+                f'异常类型：{type(exc).__name__}',
+                f'异常信息：{str(exc)[:2000]}',
+                '',
+                '堆栈摘要：',
+                traceback.format_exc(limit=8)[-6000:],
+            ))
+            append_recording_log(record_id, stage, f'处理失败：{type(exc).__name__}: {str(exc)[:300]}')
+            update_recording_status(record_id, 'error', str(exc)[:800], stage, detail,
                                     source_token_hash=None, source_token_expires=None)
             with conn() as c:
                 audit(c, '宣讲会录音处理失败', record_id)
@@ -497,6 +546,12 @@ def recording_dict(row, detail=False):
     result['summary_public'] = bool(result['summary_public'])
     if detail:
         result['transcript'] = row['transcript']
+        result['error_stage'] = row['error_stage']
+        result['error_detail'] = row['error_detail']
+        try:
+            result['process_log'] = json.loads(row['process_log'] or '[]')
+        except (TypeError, json.JSONDecodeError):
+            result['process_log'] = []
     return result
 
 
@@ -816,8 +871,9 @@ def start_recording_process(record_id: str, request: Request):
             raise HTTPException(404, '请先上传录音')
         if row['status'] in ('queued', 'transcribing', 'summarizing'):
             raise HTTPException(409, '这份录音已在处理队列中')
-        c.execute("UPDATE event_recordings SET status='queued',error=NULL,updated_at=? WHERE record_id=?", (now(), record_id))
+        c.execute("UPDATE event_recordings SET status='queued',error=NULL,error_stage=NULL,error_detail=NULL,updated_at=? WHERE record_id=?", (now(), record_id))
         audit(c, '启动宣讲会录音处理', record_id)
+    append_recording_log(record_id, '排队', '管理员已启动录音处理')
     recording_wake.set()
     return {'ok': True}
 

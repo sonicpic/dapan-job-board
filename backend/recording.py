@@ -46,12 +46,24 @@ def _json_request(url, payload=None, headers=None, method=None, timeout=120):
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read().decode('utf-8'))
     except urllib.error.HTTPError as exc:
+        raw = exc.read().decode('utf-8', errors='replace')
         try:
-            details = json.loads(exc.read().decode('utf-8'))
+            details = json.loads(raw)
             message = details.get('message') or details.get('error', {}).get('message') or details.get('code')
         except Exception:
             message = ''
-        raise RuntimeError(f'外部服务返回 HTTP {exc.code}' + (f'：{str(message)[:200]}' if message else '')) from exc
+        request_id = exc.headers.get('x-request-id') or exc.headers.get('x-dashscope-request-id')
+        cf_ray = exc.headers.get('cf-ray')
+        extra = []
+        if message:
+            extra.append(str(message)[:500])
+        elif exc.code == 524:
+            extra.append('上游网关等待模型响应超时')
+        if request_id:
+            extra.append('request_id=' + request_id[:120])
+        if cf_ray:
+            extra.append('cf-ray=' + cf_ray[:120])
+        raise RuntimeError(f'外部服务返回 HTTP {exc.code}' + (('：' + '；'.join(extra)) if extra else '')) from exc
     except (urllib.error.URLError, TimeoutError) as exc:
         raise RuntimeError('连接外部音频或总结服务失败') from exc
     except json.JSONDecodeError as exc:
@@ -255,7 +267,7 @@ EXTRACT_PROMPT = '''你正在整理一段校园招聘宣讲会录音的转写片
 FINAL_PROMPT = '''你是一名严谨的校园招聘信息编辑。根据提供的宣讲会转写或分段事实笔记，写一份全面、可核对的中文总结。
 不能遗漏录音中出现的重要岗位、部门、职责、任职要求、招聘对象、投递与面试流程、时间节点、地点、薪资福利、培养晋升、工作安排、联系方式以及现场问答。合并重复内容，过滤寒暄、杂音、口头禅和无关私人对话。
 只依据输入内容，不得补充常识、推算或猜测。开头提供的企业和宣讲时间只用于标识这场活动，不能用于补全年份、日期或其他录音未明确说明的事实。录音或转写存在开头/结尾缺失、中断、听不清、上下文不足时，必须在“录音完整性说明”中如实指出；无法确认的数字或专有名词也要明确标注。
-用中文纯文本输出，用【核心信息】【岗位与要求】【招聘流程与时间】【待遇与发展】【现场问答】【录音完整性说明】作为栏目标题；没有提到的项目写“录音中未明确提及”，不要省略整个重要栏目。'''
+必须输出标准 Markdown 文档，不要使用 Markdown 代码围栏，不要在正文前后添加解释。使用二级标题“## 核心信息”“## 岗位与要求”“## 招聘流程与时间”“## 待遇与发展”“## 现场问答”“## 录音完整性说明”；适合并列的信息使用无序列表，步骤使用有序列表，关键时间、数字和结论可使用粗体。没有提到的项目写“录音中未明确提及”，不要省略整个重要栏目。'''
 
 
 def _chunks(text, size=12000):

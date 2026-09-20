@@ -76,8 +76,11 @@ import {
   DeleteOutlined,
   PlayCircleOutlined,
   FileTextOutlined,
+  CopyOutlined,
 } from "@ant-design/icons";
 import dayjs from "dayjs";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import utc from "dayjs/plugin/utc";
 import timezone from "dayjs/plugin/timezone";
 import "dayjs/locale/zh-cn";
@@ -278,6 +281,63 @@ const recordingStatus = {
   completed: ["已完成", "green"],
   error: ["处理失败", "red"],
 };
+async function copyText(text) {
+  if (navigator.clipboard?.writeText && window.isSecureContext) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const area = document.createElement("textarea");
+  area.value = text;
+  area.setAttribute("readonly", "");
+  area.style.position = "fixed";
+  area.style.opacity = "0";
+  document.body.appendChild(area);
+  area.select();
+  const copied = document.execCommand("copy");
+  area.remove();
+  if (!copied) throw new Error("复制失败，请手动选择文本复制");
+}
+function CopyTextButton({ text, label = "复制" }) {
+  const { message } = AntApp.useApp();
+  return (
+    <Button
+      size="small"
+      type="text"
+      icon={<CopyOutlined />}
+      onClick={async (event) => {
+        event.stopPropagation();
+        try {
+          await copyText(text || "");
+          message.success("已复制到剪贴板");
+        } catch (error) {
+          message.error(error.message);
+        }
+      }}
+    >
+      {label}
+    </Button>
+  );
+}
+function normalizeSummaryMarkdown(value) {
+  let text = (value || "").trim();
+  const fenced = text.match(/^```(?:markdown|md)?\s*\n([\s\S]*?)\n```$/i);
+  if (fenced) text = fenced[1].trim();
+  return text.replace(/^\s*【([^】]+)】\s*$/gm, "## $1");
+}
+function MarkdownDocument({ children }) {
+  return (
+    <div className="recording-text markdown-document">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          a: ({ node, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" />,
+        }}
+      >
+        {normalizeSummaryMarkdown(children)}
+      </ReactMarkdown>
+    </div>
+  );
+}
 function RecordingManager({ record, initial, onChanged }) {
   const { message } = AntApp.useApp();
   const [data, setData] = useState(initial || null);
@@ -355,7 +415,14 @@ function RecordingManager({ record, initial, onChanged }) {
               { key: "updated", label: "更新时间", children: fmt(data.updated_at, "YYYY-MM-DD HH:mm:ss") },
             ]}
           />
-          {data.error && <Alert type="error" showIcon message={data.error} />}
+          {data.error && (
+            <Alert
+              type="error"
+              showIcon
+              message={data.error}
+              description={data.error_stage ? `失败阶段：${data.error_stage}` : undefined}
+            />
+          )}
           <Space wrap>
             <Button href={`/api/admin/events/${record.id}/recording/file`} icon={<AudioOutlined />}>
               下载录音
@@ -411,13 +478,39 @@ function RecordingManager({ record, initial, onChanged }) {
               items={[
                 data.summary && {
                   key: "summary",
-                  label: <><FileTextOutlined /> 全文总结</>,
-                  children: <Paragraph className="recording-text preserve">{data.summary}</Paragraph>,
+                  label: <div className="recording-panel-title"><span><FileTextOutlined /> 全文总结</span><CopyTextButton text={normalizeSummaryMarkdown(data.summary)} label="复制总结" /></div>,
+                  children: <MarkdownDocument>{data.summary}</MarkdownDocument>,
                 },
                 data.transcript && {
                   key: "transcript",
-                  label: <><AudioOutlined /> 原始转写</>,
+                  label: <div className="recording-panel-title"><span><AudioOutlined /> 原始录音转写</span><CopyTextButton text={data.transcript} label="复制转写" /></div>,
                   children: <Paragraph className="recording-text preserve">{data.transcript}</Paragraph>,
+                },
+                (data.process_log?.length || data.error_detail) && {
+                  key: "logs",
+                  label: <><FileTextOutlined /> 处理日志与错误详情</>,
+                  children: (
+                    <div className="recording-diagnostics">
+                      {data.process_log?.length > 0 && (
+                        <List
+                          size="small"
+                          dataSource={data.process_log}
+                          renderItem={(item) => (
+                            <List.Item>
+                              <div><Text type="secondary">{fmt(item.at, "MM-DD HH:mm:ss")}</Text> <Tag>{item.stage}</Tag> {item.message}</div>
+                            </List.Item>
+                          )}
+                        />
+                      )}
+                      {data.error_detail && (
+                        <details>
+                          <summary>技术错误详情</summary>
+                          <div className="diagnostic-copy"><CopyTextButton text={data.error_detail} label="复制错误详情" /></div>
+                          <pre>{data.error_detail}</pre>
+                        </details>
+                      )}
+                    </div>
+                  ),
                 },
               ].filter(Boolean)}
             />
@@ -507,8 +600,11 @@ function Detail({ record, onClose, source, saved, toggle, isAdmin, onChanged }) 
           <Divider />
           <section className="recording-summary-public">
             <Text type="secondary">录音整理</Text>
-            <Title level={4}><FileTextOutlined /> 宣讲会总结</Title>
-            <Paragraph className="recording-text preserve">{record.recording_summary}</Paragraph>
+            <div className="recording-summary-heading">
+              <Title level={4}><FileTextOutlined /> 宣讲会总结</Title>
+              <CopyTextButton text={normalizeSummaryMarkdown(record.recording_summary)} label="复制总结" />
+            </div>
+            <MarkdownDocument>{record.recording_summary}</MarkdownDocument>
             <Alert type="info" showIcon message="本总结由录音转写后自动整理，听不清或录音缺失之处以总结中的完整性说明为准。" />
           </section>
         </>

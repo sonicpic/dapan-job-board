@@ -1067,5 +1067,26 @@ input {
 .recording-visibility { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 14px 0; margin-top: 12px; border-top: 1px solid #e9ede8; }
 .recording-manager .ant-collapse { margin-top: 16px; }
 .recording-text { white-space: pre-wrap; line-height: 1.85; max-height: 560px; overflow: auto; }
+.recording-panel-title, .recording-summary-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; }
+.recording-panel-title .ant-btn { margin: -4px 18px -4px auto; }
+.recording-summary-heading h4.ant-typography { margin: 12px 0; }
+.markdown-document { white-space: normal; color: #3e5147; }
+.markdown-document h1, .markdown-document h2, .markdown-document h3 { color: #263d33; line-height: 1.45; }
+.markdown-document h1 { font-size: 22px; margin: 4px 0 18px; }
+.markdown-document h2 { font-size: 17px; margin: 24px 0 10px; padding-bottom: 7px; border-bottom: 1px solid #e5ebe5; }
+.markdown-document h3 { font-size: 15px; margin: 18px 0 8px; }
+.markdown-document p { margin: 8px 0; }
+.markdown-document ul, .markdown-document ol { padding-left: 24px; margin: 8px 0 14px; }
+.markdown-document li { margin: 5px 0; }
+.markdown-document blockquote { margin: 12px 0; padding: 8px 14px; color: #607269; background: #f4f7f3; border-left: 3px solid #8bae9c; }
+.markdown-document table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 13px; }
+.markdown-document th, .markdown-document td { border: 1px solid #dfe6df; padding: 8px 10px; text-align: left; }
+.markdown-document th { background: #f3f6f2; }
+.markdown-document code { background: #f0f3ef; border-radius: 4px; padding: 2px 5px; }
+.recording-diagnostics .ant-list { margin-bottom: 12px; }
+.recording-diagnostics details { margin-top: 12px; }
+.recording-diagnostics summary { cursor: pointer; font-weight: 600; }
+.recording-diagnostics pre { max-height: 360px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: 12px; border-radius: 8px; background: #f4f5f3; color: #49554e; font-size: 12px; line-height: 1.65; }
+.diagnostic-copy { display: flex; justify-content: flex-end; margin-top: 6px; }
 .recording-summary-public { margin: 8px 0; }
 .recording-summary-public .ant-alert { margin-top: 16px; }

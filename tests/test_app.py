@@ -180,6 +180,40 @@ def test_recording_retry_reuses_saved_transcript(client, monkeypatch):
     assert detail['summary'] == '恢复生成的总结'
 
 
+def test_recording_error_includes_stage_detail_and_log(client, monkeypatch):
+    sync_fixture(); sign_in(client)
+    path = '/api/admin/events/source-event-1/recording'
+    assert client.post(path, content=b'fake-audio', headers={
+        'Content-Type': 'audio/mp4', 'X-File-Name': 'talk.m4a',
+    }).status_code == 200
+    with app.conn() as c:
+        c.execute("UPDATE event_recordings SET status='queued',transcript=? WHERE record_id=?",
+                  ('已经保存的完整转写', 'source-event-1'))
+    monkeypatch.setenv('ASR_DASHSCOPE_API_KEY', 'test-asr-key')
+    monkeypatch.setenv('OPENAI_API_KEY', 'test-summary-key')
+    monkeypatch.setenv('OPENAI_BASE_URL', 'https://model.example/v1')
+    monkeypatch.setenv('OPENAI_MODEL', 'gpt-5.6-luna')
+    with patch.object(recording, 'summarize', side_effect=RuntimeError('外部服务返回 HTTP 524：网关超时')):
+        assert app.process_recording_queue() is True
+    detail = client.get(path).json()
+    assert detail['status'] == 'error'
+    assert detail['error_stage'] == '生成总结'
+    assert 'RuntimeError' in detail['error_detail']
+    assert 'HTTP 524' in detail['error_detail']
+    assert any(item['stage'] == '生成总结' and '处理失败' in item['message'] for item in detail['process_log'])
+
+
+def test_recording_summary_prompt_requires_markdown(monkeypatch):
+    calls = []
+    with patch.object(recording, '_call_summary', side_effect=lambda instructions, content, max_tokens: (
+        calls.append((instructions, content, max_tokens)) or '## 核心信息\n\n- 测试'
+    )):
+        result = recording.summarize('一段较短的录音转写')
+    assert result.startswith('## 核心信息')
+    assert '标准 Markdown 文档' in calls[0][0]
+    assert '## 录音完整性说明' in calls[0][0]
+
+
 def test_recording_permissions_and_file_validation(client):
     sync_fixture()
     path = '/api/admin/events/source-event-1/recording'
