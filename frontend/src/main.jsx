@@ -814,7 +814,7 @@ function JobCard({ record: r, onOpen, saved, toggle }) {
     </Card>
   );
 }
-function EventList({ items, onOpen, saved, toggle }) {
+function EventList({ items, onOpen, saved, toggle, muteStartedToday = false }) {
   const groups = Object.groupBy
     ? Object.groupBy(items, (r) => r.date || "时间待定")
     : items.reduce((a, r) => ((a[r.date || "时间待定"] ||= []).push(r), a), {});
@@ -839,7 +839,14 @@ function EventList({ items, onOpen, saved, toggle }) {
             <List
               dataSource={records}
               renderItem={(r) => (
-                <List.Item className="event-row" key={r.id}>
+                <List.Item
+                  className={`event-row${
+                    muteStartedToday && r.status === "started" && r.date === nowCN().format("YYYY-MM-DD")
+                      ? " event-row-inactive"
+                      : ""
+                  }`}
+                  key={r.id}
+                >
                   <div className="event-time">
                     <Text strong>
                       {r.time_known ? fmt(r.starts_at, "HH:mm") : "待定"}
@@ -1077,8 +1084,8 @@ function PublicPage() {
           (!date || r.date === date) &&
           (eventStatus === "all" ||
             (eventStatus === "today" && r.date === today) ||
-            (eventStatus === "upcoming" && r.status !== "started" && r.status !== "ended") ||
-            (eventStatus === "past" && (r.status === "started" || r.status === "ended"))),
+            (eventStatus === "upcoming" && r.status !== "ended" && (r.status !== "started" || r.date === today)) ||
+            (eventStatus === "past" && (r.status === "ended" || r.status === "started" && r.date !== today))),
       );
     return records.sort(
       (a, b) =>
@@ -1343,6 +1350,7 @@ function PublicPage() {
                 onOpen={setSelected}
                 saved={saved}
                 toggle={toggle}
+                muteStartedToday={eventStatus === "upcoming"}
               />
             ) : tab === "interviews" ? (
               <InterviewList

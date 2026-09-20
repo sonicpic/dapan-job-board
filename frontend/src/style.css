@@ -650,6 +650,15 @@ input {
   padding: 20px;
   align-items: center;
 }
+.event-row-inactive.ant-list-item {
+  background: #f2f3f1;
+  filter: grayscale(1);
+  opacity: 0.55;
+}
+.event-row-inactive .ant-btn,
+.event-row-inactive .ant-typography {
+  color: #727771 !important;
+}
 .event-time {
   width: 90px;
   flex-shrink: 0;
