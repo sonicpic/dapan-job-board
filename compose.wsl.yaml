@@ -1,0 +1,18 @@
+services:
+  app:
+    network_mode: host
+    ports: !reset []
+    command:
+      - uvicorn
+      - app:app
+      - --app-dir
+      - /app/backend
+      - --host
+      - 127.0.0.1
+      - --port
+      - ${HOST_PORT:-58112}
+      - --workers
+      - "1"
+      - --no-access-log
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:' + os.environ.get('HOST_PORT','58112') + '/api/health',timeout=3)"]

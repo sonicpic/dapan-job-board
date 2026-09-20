@@ -12,6 +12,7 @@ services:
     volumes:
       - ./data:/app/data
     environment:
+      HOST_PORT: ${HOST_PORT:-18080}
       APP_ORIGIN: ${APP_ORIGIN:-http://localhost:8000}
       APP_ORIGINS: ${APP_ORIGINS:-}
       TZ: Asia/Shanghai

@@ -106,19 +106,19 @@ AWS Nginx 配置挂载在 `/home/web/conf.d/job.dapanclaw.top.conf`，仓库中�
 ```bash
 cd /home/zhihongpan/services/dapan-job-board
 docker compose build
-docker compose up -d
-docker compose ps
+docker compose -f compose.yaml -f compose.wsl.yaml up -d
+docker compose -f compose.yaml -f compose.wsl.yaml ps
 curl -fsS http://127.0.0.1:58112/api/health
 curl -fsS https://job.dapanclaw.top/api/health
 ```
 
-基础镜像、Debian 软件包和 Python 依赖使用官方 HTTPS 源，依赖分别在 `frontend/package-lock.json` 和 `backend/requirements.lock` 锁定。若 WSL 的 TUN 使默认 Docker 构建网络无法联网，在私有 `.env` 设置 `BUILD_NETWORK=host`；这只影响构建阶段。
+基础镜像、Debian 软件包和 Python 依赖使用官方 HTTPS 源，依赖分别在 `frontend/package-lock.json` 和 `backend/requirements.lock` 锁定。当前 WSL 的 Clash TUN 对 Docker bridge 的部分 fake-IP 回程不可用，因此私有 `.env` 设置 `BUILD_NETWORK=host`，运行时叠加 `compose.wsl.yaml`。覆盖文件使用 WSL host 网络访问外部服务，但 Uvicorn 仍只绑定 `127.0.0.1:58112`。
 
 ```bash
 # 运行日志 / 重启
 cd /home/zhihongpan/services/dapan-job-board
 docker compose logs --tail=100 app
-docker compose restart app
+docker compose -f compose.yaml -f compose.wsl.yaml restart app
 
 # 测试环境与后端回归
 python3 -m venv .venv
