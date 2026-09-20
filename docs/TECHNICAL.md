@@ -78,7 +78,7 @@ API 密钥只保存在服务器 `/opt/job-board/.env`，不写入数据库、前
 
 ## 6. 部署与访问
 
-部署目录可按服务器环境选择；端口通过私有 `.env` 的 `HOST_PORT` 配置，无需修改 Compose 文件。访问入口为：
+部署目录可按服务器环境选择；端口通过私有 `.env` 的 `HOST_PORT` 配置，无需修改 Compose 文件。若代理或 TUN 导致 Docker 构建网络无法访问依赖源，可设置 `BUILD_NETWORK=host`，该配置仅影响镜像构建。访问入口为：
 
 - 域名：`https://example.com/`
 - IP 备用入口：`http://YOUR_SERVER_IP/`

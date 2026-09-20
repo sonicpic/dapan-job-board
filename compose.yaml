@@ -1,6 +1,8 @@
 services:
   app:
-    build: .
+    build:
+      context: .
+      network: ${BUILD_NETWORK:-default}
     image: campus-job-board:latest
     container_name: campus-job-board
     restart: unless-stopped
