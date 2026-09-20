@@ -56,7 +56,7 @@ FastAPI 启动后运行后台线程，每 900 秒检查“招聘信息”和“�
 
 批量补齐默认只处理没有推荐结果的企业。仅存在于已结束宣讲会中的企业不会进入分析列表；如果企业还有招聘岗位或未结束宣讲，则仍可分析。
 
-API 密钥只保存在服务器 `/opt/job-board/.env`，不写入数据库、前端文件或 Git。
+API 密钥只保存在部署目录下的私有 `.env`，不写入数据库、前端文件或 Git。
 
 管理员收藏保存在 SQLite 的 `admin_bookmarks` 表中，并按管理员账号同步到各登录设备；访客收藏仍只保存在浏览器 `localStorage` 中。
 
@@ -80,15 +80,15 @@ API 密钥只保存在服务器 `/opt/job-board/.env`，不写入数据库、前
 
 部署目录可按服务器环境选择；端口通过私有 `.env` 的 `HOST_PORT` 配置，无需修改 Compose 文件。若代理或 TUN 导致 Docker 构建网络无法访问依赖源，可设置 `BUILD_NETWORK=host`，该配置仅影响镜像构建。访问入口为：
 
-- 域名：`https://example.com/`
-- IP 备用入口：`http://YOUR_SERVER_IP/`
+- 域名：`https://job.dapanclaw.top/`
+- WSL 本机入口：`http://127.0.0.1:58112/`
 
 请求链路为 Cloudflare → Nginx → Docker 内的 FastAPI。IP 入口独立保留，不强制跳转到域名。
 
 常用运维命令：
 
 ```bash
-cd /opt/job-board
+cd /home/zhihongpan/services/dapan-job-board
 docker compose up -d --build
 docker compose ps
 docker compose logs --tail=100 app
@@ -98,10 +98,10 @@ curl -fsS "http://127.0.0.1:${HOST_PORT:-18080}/api/health"
 前端构建与后端测试：
 
 ```bash
-cd /opt/job-board/frontend
+cd /home/zhihongpan/services/dapan-job-board/frontend
 npm run build
 
-cd /opt/job-board
+cd /home/zhihongpan/services/dapan-job-board
 .venv/bin/pytest tests -q
 ```
 

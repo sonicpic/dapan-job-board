@@ -2,12 +2,11 @@
 
 简明技术说明见 [`docs/TECHNICAL.md`](docs/TECHNICAL.md)。
 
-- 网站：https://example.com/
-- IP 备用入口：http://YOUR_SERVER_IP/（域名未备案或 Cloudflare 源站 TLS 失败时使用）
-- 管理后台：https://example.com/admin
+- 网站：https://job.dapanclaw.top/
+- 管理后台：https://job.dapanclaw.top/admin
 - 数据源：https://www.kdocs.cn/l/REPLACE_ME
-- 服务器：`YOUR_SERVER_IP`，项目目录：`/opt/job-board`
-- 本地源码镜像：`本地项目目录`
+- 运行主机：本机 WSL Ubuntu，项目目录：`/home/zhihongpan/services/dapan-job-board`
+- 入口服务器：AWS `43.213.3.74`，由 FRPS `58112` 转发到 WSL
 
 ## 功能
 
@@ -19,7 +18,7 @@
 
 ## 网评分析配置
 
-密钥只通过服务器 `/opt/job-board/.env` 提供，不写入网页、SQLite 或 Git。配置后重建或重启容器，再到后台“网评分析”逐个提交，或确认 API 费用后批量补齐。任务和结果保存在 SQLite；服务重启时，未完成任务会回到队列。
+密钥只通过部署目录下的私有 `.env` 提供，不写入网页、SQLite 或 Git。配置后重建或重启容器，再到后台“网评分析”逐个提交，或确认 API 费用后批量补齐。任务和结果保存在 SQLite；服务重启时，未完成任务会回到队列。
 
 方案一使用带联网搜索工具的 OpenAI Responses API：
 
@@ -88,42 +87,38 @@ FastAPI 后台线程每 900 秒读取金山文档“招聘信息”和“宣讲�
 
 ## 管理员凭据
 
-初始账号为 `admin`。随机初始密码保存在服务器 `/opt/job-board/data/initial-admin.txt`（仅属主可读），不纳入源码。首次登录后请在“安全设置”修改密码。修改后所有管理会话失效，服务器初始凭据文件自动移除。
+初始账号为 `admin`。随机初始密码保存在部署目录下的 `data/initial-admin.txt`（仅属主可读），不纳入源码。首次登录后请在“安全设置”修改密码。修改后所有管理会话失效，服务器初始凭据文件自动移除。
 
 管理会话有效期 8 小时，Cookie 设置 Secure、HttpOnly、SameSite=Strict；密码采用 scrypt 哈希。后台写接口验证来源并限制登录尝试。
 
 ## 部署架构
 
-Cloudflare 橙云 → 服务器 Nginx HTTPS → `127.0.0.1:18080` → Docker FastAPI/SQLite。公网 IP 另有独立的 HTTP 入口，不会跳转到域名。
+Cloudflare 橙云 → AWS Nginx HTTPS → AWS FRPS `58112` → Windows FRPC → WSL `127.0.0.1:58112` → Docker FastAPI/SQLite。
 
 Nginx 直接提供 `frontend/dist/assets` 静态资源，应用负责页面入口及 API。容器以非 root 用户运行，根文件系统只读；持久数据为 `data/jobs.sqlite3`。保持单 worker，避免重复启动同步线程。
 
-Nginx 配置为 `/etc/nginx/sites-available/example.com`，项目中的 `nginx.conf` 为配置副本。证书位于 `/etc/letsencrypt/live/example.com/`；Certbot 定时续期，续期后通过 `/etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh` 重载 Nginx。Cloudflare SSL/TLS 模式建议使用 **Full (strict)**，不要对 `/api/*` 配置强制缓存规则。
+AWS Nginx 配置挂载在 `/home/web/conf.d/job.dapanclaw.top.conf`，仓库中的 `deploy/nginx/job.dapanclaw.top.conf` 是可迁移模板。Cloudflare SSL/TLS 模式使用 **Full (strict)**，不要对 `/api/*` 配置强制缓存规则。
 
 ## 构建与发布
 
-以下命令在服务器执行。首次安装依赖用 `npm ci`，后续依赖不变可省略。
+以下命令在 WSL 执行。前端由 Docker 多阶段构建自动编译，无需先在宿主机安装 Node 依赖。
 
 ```bash
-cd /opt/job-board/frontend
-npm ci --registry=https://registry.npmmirror.com
-npm run build
-cd /opt/job-board
+cd /home/zhihongpan/services/dapan-job-board
 docker compose build
 docker compose up -d
 docker compose ps
-curl -fsS https://example.com/api/health
+curl -fsS http://127.0.0.1:58112/api/health
+curl -fsS https://job.dapanclaw.top/api/health
 ```
 
-基础镜像通过 DaoCloud 镜像代理获取；Python 依赖通过腾讯云 PyPI 镜像安装。依赖分别在 `frontend/package-lock.json` 和 `backend/requirements.lock` 锁定。
+基础镜像、Debian 软件包和 Python 依赖使用官方 HTTPS 源，依赖分别在 `frontend/package-lock.json` 和 `backend/requirements.lock` 锁定。若 WSL 的 TUN 使默认 Docker 构建网络无法联网，在私有 `.env` 设置 `BUILD_NETWORK=host`；这只影响构建阶段。
 
 ```bash
 # 运行日志 / 重启
-cd /opt/job-board
+cd /home/zhihongpan/services/dapan-job-board
 docker compose logs --tail=100 app
 docker compose restart app
-nginx -t
-systemctl reload nginx
 
 # 测试环境与后端回归
 python3 -m venv .venv
@@ -135,11 +130,11 @@ python3 -m venv .venv
 
 ## 备份与恢复
 
-`job-board-backup.timer` 每日北京时间 03:20 左右执行 SQLite 在线一致性备份并检查完整性，保留最近 14 份，位置为项目目录下的 `backups`。备份脚本默认从自身路径识别项目根目录，也可用 `JOB_BOARD_ROOT` 指定。备份含密码哈希、设置和会话信息，应仅允许管理员读取。它是同机恢复副本，主机损坏时仍需另行保留异地备份。
+`dapan-job-board-backup.timer` 每日北京时间 03:20 左右执行 SQLite 在线一致性备份并检查完整性，保留最近 14 份，位置为项目目录下的 `backups`。备份脚本默认从自身路径识别项目根目录，也可用 `JOB_BOARD_ROOT` 指定。备份含密码哈希、设置和会话信息，应仅允许管理员读取。它是同机恢复副本，主机损坏时仍需另行保留异地备份。
 
 ```bash
 python3 scripts/backup.py
-systemctl list-timers job-board-backup.timer
+systemctl list-timers dapan-job-board-backup.timer
 ```
 
 恢复时先停容器，将整个现有 `data` 目录移到带时间戳的安全位置留作回退，新建 `data` 目录，把所选备份复制为 `data/jobs.sqlite3`，将目录及数据库属主设为 `10001:10001`，数据库权限设为 `600`，再启动容器。不要把备份覆盖到运行中的 SQLite 或残留 WAL 文件上。恢复后清空 `sessions` 表使旧会话失效，并在后台核对同步状态。
