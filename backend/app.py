@@ -386,7 +386,6 @@ def process_recording_queue():
     if not cfg['configured'] or not recording_lock.acquire(blocking=False):
         return False
     record_id = None
-    raw_token = None
     try:
         with conn() as c:
             c.execute('BEGIN IMMEDIATE')
@@ -394,20 +393,29 @@ def process_recording_queue():
             if not row:
                 return False
             record_id = row['record_id']
-            raw_token = secrets.token_urlsafe(40)
-            token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
-            expires = time.time() + 86400
-            c.execute("UPDATE event_recordings SET status='transcribing',error=NULL,source_token_hash=?,source_token_expires=?,updated_at=? WHERE record_id=?",
-                      (token_hash, expires, now(), record_id))
+            resume_transcript = row['transcript'] if row['transcript'] and not row['summary'] else None
+            if resume_transcript:
+                c.execute("UPDATE event_recordings SET status='summarizing',error=NULL,source_token_hash=NULL,source_token_expires=NULL,updated_at=? WHERE record_id=?",
+                          (now(), record_id))
+            else:
+                raw_token = secrets.token_urlsafe(40)
+                token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+                expires = time.time() + 86400
+                c.execute("UPDATE event_recordings SET status='transcribing',error=NULL,source_token_hash=?,source_token_expires=?,updated_at=? WHERE record_id=?",
+                          (token_hash, expires, now(), record_id))
         event = recording_event(record_id) or {}
-        origin = (os.getenv('ASR_PUBLIC_ORIGIN', '').strip() or ORIGIN).rstrip('/')
-        source_url = f'{origin}/api/recordings/source/{raw_token}'
-        task_id = recording.submit_asr(source_url)
-        update_recording_status(record_id, 'transcribing', asr_task_id=task_id)
-        output = recording.wait_asr(task_id)
-        transcript = recording.fetch_transcript(output)
-        update_recording_status(record_id, 'summarizing', transcript=transcript,
-                                source_token_hash=None, source_token_expires=None)
+        if resume_transcript:
+            transcript = resume_transcript
+        else:
+            origin = (os.getenv('ASR_PUBLIC_ORIGIN', '').strip() or ORIGIN).rstrip('/')
+            source_url = f'{origin}/api/recordings/source/{raw_token}'
+            recording.prepare_asr_audio(row['file_path'])
+            task_id = recording.submit_asr(source_url)
+            update_recording_status(record_id, 'transcribing', asr_task_id=task_id)
+            output = recording.wait_asr(task_id)
+            transcript = recording.fetch_transcript(output)
+            update_recording_status(record_id, 'summarizing', transcript=transcript,
+                                    source_token_hash=None, source_token_expires=None)
         summary = recording.summarize(transcript, event.get('company', ''), event.get('time_text', ''))
         update_recording_status(record_id, 'completed', transcript=transcript, summary=summary,
                                 source_token_hash=None, source_token_expires=None)
@@ -740,6 +748,7 @@ async def upload_recording(record_id: str, request: Request):
             if old_path != target:
                 try:
                     old_path.resolve().relative_to(RECORDINGS.resolve())
+                    recording.asr_audio_path(old_path).unlink(missing_ok=True)
                     old_path.unlink(missing_ok=True)
                 except (ValueError, OSError):
                     pass
@@ -786,6 +795,7 @@ def delete_recording(record_id: str, request: Request):
         audit(c, '删除宣讲会录音', record_id)
     try:
         path = safe_recording_path(row['file_path'])
+        recording.asr_audio_path(path).unlink(missing_ok=True)
         path.unlink(missing_ok=True)
         path.parent.rmdir()
     except (HTTPException, OSError):
@@ -836,7 +846,7 @@ def asr_recording_source(token: str):
                         (token_hash, time.time())).fetchone()
     if not row or not hmac.compare_digest(row['source_token_hash'], token_hash):
         raise HTTPException(404, '临时录音链接不存在或已过期')
-    return FileResponse(safe_recording_path(row['file_path']), media_type=row['mime_type'] or 'application/octet-stream')
+    return FileResponse(safe_recording_path(recording.asr_audio_path(row['file_path'])), media_type='audio/mp4')
 
 
 @app.put('/api/admin/pushplus')

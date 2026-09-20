@@ -136,12 +136,14 @@ def test_recording_upload_process_visibility_and_delete(client, monkeypatch):
     monkeypatch.setenv('OPENAI_BASE_URL', 'https://model.example/v1')
     monkeypatch.setenv('OPENAI_MODEL', 'gpt-5.6-luna')
     assert client.post(path + '/process').status_code == 200
-    with patch.object(recording, 'submit_asr', return_value='task-123') as submit, \
+    with patch.object(recording, 'prepare_asr_audio') as prepare, \
+         patch.object(recording, 'submit_asr', return_value='task-123') as submit, \
          patch.object(recording, 'wait_asr', return_value={'task_status': 'SUCCEEDED'}), \
          patch.object(recording, 'fetch_transcript', return_value='这是完整原始转写。'), \
          patch.object(recording, 'summarize', return_value='## 核心信息\n这是管理员确认后的完整总结。'):
         assert app.process_recording_queue() is True
     assert submit.call_args.args[0].startswith('http')
+    prepare.assert_called_once()
     detail = client.get(path).json()
     assert detail['status'] == 'completed'
     assert detail['transcript'] == '这是完整原始转写。'
@@ -152,6 +154,30 @@ def test_recording_upload_process_visibility_and_delete(client, monkeypatch):
     assert 'transcript' not in json.dumps(public_event, ensure_ascii=False)
     assert client.delete(path).status_code == 200
     assert client.get(path).status_code == 404
+
+
+def test_recording_retry_reuses_saved_transcript(client, monkeypatch):
+    sync_fixture(); sign_in(client)
+    path = '/api/admin/events/source-event-1/recording'
+    assert client.post(path, content=b'fake-audio', headers={
+        'Content-Type': 'audio/mp4', 'X-File-Name': 'talk.m4a',
+    }).status_code == 200
+    with app.conn() as c:
+        c.execute("UPDATE event_recordings SET status='error',transcript=?,summary=NULL,error='外部服务返回 HTTP 524' WHERE record_id=?",
+                  ('已经保存的完整转写', 'source-event-1'))
+    monkeypatch.setenv('ASR_DASHSCOPE_API_KEY', 'test-asr-key')
+    monkeypatch.setenv('OPENAI_API_KEY', 'test-summary-key')
+    monkeypatch.setenv('OPENAI_BASE_URL', 'https://model.example/v1')
+    monkeypatch.setenv('OPENAI_MODEL', 'gpt-5.6-luna')
+    assert client.post(path + '/process').status_code == 200
+    with patch.object(recording, 'submit_asr', side_effect=AssertionError('已有转写时不应重新提交 ASR')), \
+         patch.object(recording, 'summarize', return_value='恢复生成的总结') as summarize:
+        assert app.process_recording_queue() is True
+    summarize.assert_called_once()
+    detail = client.get(path).json()
+    assert detail['status'] == 'completed'
+    assert detail['transcript'] == '已经保存的完整转写'
+    assert detail['summary'] == '恢复生成的总结'
 
 
 def test_recording_permissions_and_file_validation(client):
@@ -173,13 +199,28 @@ def test_qwen_filetrans_payload_and_transcript_result(monkeypatch):
         assert recording.submit_asr('http://jobs.example.com/audio-token') == 'task-1'
     assert calls[0][0][0].endswith('/services/audio/asr/transcription')
     assert calls[0][0][1]['model'] == 'qwen-audio-3.0-asr-flash-filetrans'
-    assert calls[0][0][1]['input']['file_url'] == 'http://jobs.example.com/audio-token'
+    assert calls[0][0][1]['input']['file_urls'] == ['http://jobs.example.com/audio-token']
+    assert calls[0][0][1]['parameters'] == {'channel_id': [0], 'diarization_enabled': True}
     assert calls[0][0][2]['X-DashScope-Async'] == 'enable'
     result = {'results': [{'transcription_url': 'https://result.example/transcript.json'}]}
     with patch.object(recording, '_json_request', return_value={
         'transcripts': [{'text': '第一部分。'}, {'text': '第二部分。'}]
     }):
         assert recording.fetch_transcript(result) == '第一部分。\n\n第二部分。'
+
+    with patch.object(recording, '_json_request', return_value={
+        'transcripts': [{'sentences': [
+            {'speaker_id': 0, 'text': '大家好。'},
+            {'speaker_id': 0, 'text': '欢迎参加宣讲。'},
+            {'speaker_id': 1, 'text': '请问怎样投递？'},
+            {'speaker_id': 0, 'text': '请通过官网投递。'},
+        ]}]
+    }):
+        assert recording.fetch_transcript(result) == (
+            '说话人 1：大家好。欢迎参加宣讲。\n\n'
+            '说话人 2：请问怎样投递？\n\n'
+            '说话人 1：请通过官网投递。'
+        )
 
 
 def test_http_ip_login_uses_non_secure_cookie(tmp_path, monkeypatch):

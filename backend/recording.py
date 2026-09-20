@@ -1,9 +1,11 @@
 import json
 import os
 import re
+import subprocess
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 
 ASR_MODEL = 'qwen-audio-3.0-asr-flash-filetrans'
@@ -62,7 +64,11 @@ def submit_asr(file_url):
         base + '/services/audio/asr/transcription',
         {
             'model': _env('ASR_MODEL', ASR_MODEL),
-            'input': {'file_url': file_url},
+            'input': {'file_urls': [file_url]},
+            'parameters': {
+                'channel_id': [0],
+                'diarization_enabled': True,
+            },
         },
         {
             'Authorization': 'Bearer ' + _env('ASR_DASHSCOPE_API_KEY'),
@@ -73,6 +79,44 @@ def submit_asr(file_url):
     if not task_id:
         raise RuntimeError('百炼没有返回转写任务编号')
     return task_id
+
+
+def asr_audio_path(file_path):
+    source = Path(file_path)
+    return source.with_name(source.stem + '.asr-mono.m4a')
+
+
+def prepare_asr_audio(file_path):
+    """Create a mono speech copy so DashScope speaker diarization can run."""
+    source = Path(file_path)
+    target = asr_audio_path(source)
+    if target.is_file() and target.stat().st_size and target.stat().st_mtime >= source.stat().st_mtime:
+        return target
+    temporary = target.with_name(target.stem + '.processing.m4a')
+    temporary.unlink(missing_ok=True)
+    try:
+        completed = subprocess.run(
+            [
+                'ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', '-y',
+                '-i', str(source), '-vn', '-map_metadata', '-1', '-ac', '1', '-ar', '16000',
+                '-c:a', 'aac', '-b:a', '64k', str(temporary),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=3600,
+            check=False,
+        )
+        if completed.returncode or not temporary.is_file() or not temporary.stat().st_size:
+            detail = (completed.stderr or '').strip().splitlines()
+            suffix = ('：' + detail[-1][:200]) if detail else ''
+            raise RuntimeError('无法为说话人分离准备单声道录音' + suffix)
+        temporary.replace(target)
+        target.chmod(0o600)
+        return target
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError('准备单声道录音超时') from exc
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def wait_asr(task_id, on_status=None, poll_seconds=8, timeout_seconds=21600):
@@ -119,10 +163,28 @@ def _transcript_text(value):
         if isinstance(transcripts, list):
             parts = [_transcript_text(item) for item in transcripts]
             return '\n\n'.join(part for part in parts if part)
+        sentences = value.get('sentences')
+        if isinstance(sentences, list) and any(
+            isinstance(item, dict) and item.get('speaker_id') is not None for item in sentences
+        ):
+            turns = []
+            for sentence in sentences:
+                if not isinstance(sentence, dict):
+                    continue
+                text = sentence.get('text')
+                speaker = sentence.get('speaker_id')
+                if not isinstance(text, str) or not text.strip():
+                    continue
+                label = f'说话人 {speaker + 1}' if isinstance(speaker, int) else '说话人'
+                if turns and turns[-1][0] == label:
+                    turns[-1][1].append(text.strip())
+                else:
+                    turns.append([label, [text.strip()]])
+            if turns:
+                return '\n\n'.join(f'{label}：{"".join(parts)}' for label, parts in turns)
         text = value.get('text')
         if isinstance(text, str) and text.strip():
             return text.strip()
-        sentences = value.get('sentences')
         if isinstance(sentences, list):
             parts = [_transcript_text(item) for item in sentences]
             return '\n'.join(part for part in parts if part)
@@ -196,7 +258,7 @@ FINAL_PROMPT = '''你是一名严谨的校园招聘信息编辑。根据提供�
 用中文纯文本输出，用【核心信息】【岗位与要求】【招聘流程与时间】【待遇与发展】【现场问答】【录音完整性说明】作为栏目标题；没有提到的项目写“录音中未明确提及”，不要省略整个重要栏目。'''
 
 
-def _chunks(text, size=18000):
+def _chunks(text, size=12000):
     text = text.strip()
     chunks = []
     while len(text) > size:
@@ -216,13 +278,13 @@ def summarize(transcript, company='', event_time=''):
     chunks = _chunks(transcript)
     context = f'宣讲企业或活动：{company or "未注明"}\n宣讲时间：{event_time or "未注明"}\n\n'
     if len(chunks) == 1:
-        return _call_summary(FINAL_PROMPT, context + '完整转写：\n' + chunks[0], 8000)
+        return _call_summary(FINAL_PROMPT, context + '完整转写：\n' + chunks[0], 5000)
     notes = []
     for index, chunk in enumerate(chunks, 1):
         notes.append(_call_summary(
             EXTRACT_PROMPT,
             context + f'这是完整录音转写的第 {index}/{len(chunks)} 段：\n' + chunk,
-            4000,
+            2500,
         ))
     joined = '\n\n'.join(f'【第 {index} 段事实笔记】\n{note}' for index, note in enumerate(notes, 1))
-    return _call_summary(FINAL_PROMPT, context + '以下是按原始顺序提取的全部分段事实笔记：\n\n' + joined, 8000)
+    return _call_summary(FINAL_PROMPT, context + '以下是按原始顺序提取的全部分段事实笔记：\n\n' + joined, 5000)
