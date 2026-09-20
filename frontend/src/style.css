@@ -1069,3 +1069,4 @@ input {
 .recording-text { white-space: pre-wrap; line-height: 1.85; max-height: 560px; overflow: auto; }
 .recording-summary-public { margin: 8px 0; }
 .recording-summary-public .ant-alert { margin-top: 16px; }
+.android-upload-help ol { padding-left: 22px; line-height: 1.9; }
