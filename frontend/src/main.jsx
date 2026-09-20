@@ -814,27 +814,46 @@ function JobCard({ record: r, onOpen, saved, toggle }) {
     </Card>
   );
 }
-function EventList({ items, onOpen, saved, toggle, muteStartedToday = false }) {
+const compareEventTime = (a, b) => {
+  if (!a.starts_at && !b.starts_at) return (b.source_row || 0) - (a.source_row || 0);
+  if (!a.starts_at) return 1;
+  if (!b.starts_at) return -1;
+  return a.starts_at.localeCompare(b.starts_at) || (b.source_row || 0) - (a.source_row || 0);
+};
+
+function EventList({ items, onOpen, saved, toggle, muteStartedToday = false, sortOrder = "default" }) {
+  const pinned = items.filter((r) => r.pinned);
+  const regular = items.filter((r) => !r.pinned);
   const groups = Object.groupBy
-    ? Object.groupBy(items, (r) => r.date || "时间待定")
-    : items.reduce((a, r) => ((a[r.date || "时间待定"] ||= []).push(r), a), {});
+    ? Object.groupBy(regular, (r) => r.date || "时间待定")
+    : regular.reduce((a, r) => ((a[r.date || "时间待定"] ||= []).push(r), a), {});
+  const datedGroups = Object.entries(groups).sort(([a], [b]) => {
+    if (a === "时间待定") return 1;
+    if (b === "时间待定") return -1;
+    return sortOrder === "desc" ? b.localeCompare(a) : a.localeCompare(b);
+  });
+  const sections = pinned.length ? [["置顶宣讲", pinned], ...datedGroups] : datedGroups;
   return (
     <div className="event-groups">
-      {Object.entries(groups)
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([date, records]) => (
+      {sections.map(([date, records]) => {
+        const pinnedSection = date === "置顶宣讲";
+        return (
           <section key={date}>
             <div className="day-heading">
               <Title level={4}>
-                {date === "时间待定" ? date : dayjs(date).format("M月D日")}
+                {pinnedSection || date === "时间待定" ? date : dayjs(date).format("M月D日")}
               </Title>
               <Text type="secondary">
-                {date === "时间待定"
+                {pinnedSection
+                  ? "优先显示"
+                  : date === "时间待定"
                   ? "请查看原表"
                   : dayjs(date).format("dddd")}
-                {date === nowCN().format("YYYY-MM-DD") ? " · 今天" : ""}
+                {!pinnedSection && date === nowCN().format("YYYY-MM-DD") ? " · 今天" : ""}
               </Text>
-              <Tag bordered={false}>{records.length} 场</Tag>
+              <Tag color={pinnedSection ? "gold" : undefined} bordered={false}>
+                {pinnedSection && <PushpinOutlined />} {records.length} 场
+              </Tag>
             </div>
             <List
               dataSource={records}
@@ -849,9 +868,18 @@ function EventList({ items, onOpen, saved, toggle, muteStartedToday = false }) {
                 >
                   <div className="event-time">
                     <Text strong>
-                      {r.time_known ? fmt(r.starts_at, "HH:mm") : "待定"}
+                      {r.time_known
+                        ? fmt(r.starts_at, pinnedSection ? "MM-DD HH:mm" : "HH:mm")
+                        : pinnedSection && r.date
+                          ? dayjs(r.date).format("MM-DD")
+                          : "待定"}
                     </Text>
                     {statusTag(r)}
+                    {r.pinned && (
+                      <Tag className="event-pinned-tag" color="gold" bordered={false}>
+                        <PushpinOutlined /> 置顶
+                      </Tag>
+                    )}
                   </div>
                   <div className="event-content">
                     <Button
@@ -890,7 +918,8 @@ function EventList({ items, onOpen, saved, toggle, muteStartedToday = false }) {
               )}
             />
           </section>
-        ))}
+        );
+      })}
     </div>
   );
 }
@@ -943,6 +972,7 @@ function PublicPage() {
     [category, setCategory] = useState(),
     [jobStatus, setJobStatus] = useState("active"),
     [eventStatus, setEventStatus] = useState("upcoming"),
+    [eventSort, setEventSort] = useState("default"),
     [mode, setMode] = useState("cards"),
     [page, setPage] = useState(1),
     [selected, setSelected] = useState(null),
@@ -995,7 +1025,7 @@ function PublicPage() {
   }, []);
   useEffect(() => {
     setPage(1);
-  }, [query, city, education, category, jobStatus, eventStatus, tab, date]);
+  }, [query, city, education, category, jobStatus, eventStatus, eventSort, tab, date]);
   useEffect(() => {
     if (data) document.title = data.config.title + " · 校园招聘与宣讲会";
   }, [data?.config.title]);
@@ -1091,7 +1121,7 @@ function PublicPage() {
       (a, b) =>
         Number(b.pinned) - Number(a.pinned) ||
         (a.kind === "event" && b.kind === "event"
-          ? (a.starts_at || "9999").localeCompare(b.starts_at || "9999")
+          ? (a.pinned || eventSort !== "desc" ? 1 : -1) * compareEventTime(a, b)
           : (b.updated_date || "").localeCompare(a.updated_date || "")) ||
         (b.source_row || 0) - (a.source_row || 0),
     );
@@ -1104,6 +1134,7 @@ function PublicPage() {
     category,
     jobStatus,
     eventStatus,
+    eventSort,
     date,
     saved,
   ]);
@@ -1119,6 +1150,7 @@ function PublicPage() {
     setCategory();
     setJobStatus("active");
     setEventStatus("upcoming");
+    setEventSort("default");
     setDate(null);
   };
   const configs = data?.config;
@@ -1276,16 +1308,29 @@ function PublicPage() {
                     />
                   </>
                 ) : tab === "events" ? (
-                  <Segmented
-                    value={eventStatus}
-                    onChange={setEventStatus}
-                    options={[
-                      { value: "upcoming", label: "待参加" },
-                      { value: "today", label: "今天" },
-                      { value: "all", label: "全部" },
-                      { value: "past", label: "往期" },
-                    ]}
-                  />
+                  <>
+                    <Segmented
+                      value={eventStatus}
+                      onChange={setEventStatus}
+                      options={[
+                        { value: "upcoming", label: "待参加" },
+                        { value: "today", label: "今天" },
+                        { value: "all", label: "全部" },
+                        { value: "past", label: "往期" },
+                      ]}
+                    />
+                    <Select
+                      className="event-sort-select"
+                      aria-label="宣讲时间排序"
+                      value={eventSort}
+                      onChange={setEventSort}
+                      options={[
+                        { value: "default", label: "默认顺序" },
+                        { value: "asc", label: "时间升序" },
+                        { value: "desc", label: "时间降序" },
+                      ]}
+                    />
+                  </>
                 ) : tab === "interviews" ? (
                   <Text type="secondary">仅管理员可见</Text>
                 ) : (
@@ -1351,6 +1396,7 @@ function PublicPage() {
                 saved={saved}
                 toggle={toggle}
                 muteStartedToday={eventStatus === "upcoming"}
+                sortOrder={eventSort}
               />
             ) : tab === "interviews" ? (
               <InterviewList
