@@ -1703,7 +1703,21 @@ function AdminPage() {
       (!reviewQuery || item.company.includes(reviewQuery)) &&
       (reviewStatus === "all" || item.status === reviewStatus),
   );
-  const recordingRows = data.records.filter((item) => item.kind === "event");
+  const recordingStatusOrder = {
+    transcribing: 0,
+    summarizing: 0,
+    queued: 0,
+    uploaded: 1,
+    error: 2,
+    completed: 3,
+  };
+  const recordingRows = data.records
+    .filter((item) => item.kind === "event")
+    .sort((a, b) =>
+      (recordingStatusOrder[a.recording?.status] ?? 9) -
+        (recordingStatusOrder[b.recording?.status] ?? 9) ||
+      (b.starts_at || "").localeCompare(a.starts_at || ""),
+    );
   const reviewPendingCount = data.reviews.filter((item) =>
     ["queued", "running"].includes(item.status),
   ).length;
