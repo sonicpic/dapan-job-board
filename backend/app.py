@@ -9,6 +9,7 @@ import sqlite3
 import threading
 import time
 import traceback
+import unicodedata
 import urllib.error
 import urllib.request
 import uuid
@@ -183,6 +184,39 @@ def init():
           records INTEGER NOT NULL DEFAULT 0,
           message TEXT
         );
+        CREATE TABLE IF NOT EXISTS feishu_annotations(
+          username TEXT NOT NULL,
+          base_token TEXT NOT NULL,
+          table_id TEXT NOT NULL,
+          record_id TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT '待筛选',
+          priority INTEGER NOT NULL DEFAULT 0,
+          tags TEXT NOT NULL DEFAULT '[]',
+          note TEXT NOT NULL DEFAULT '',
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY(username, base_token, table_id, record_id)
+        );
+        CREATE TABLE IF NOT EXISTS feishu_record_search(
+          base_token TEXT NOT NULL,
+          table_id TEXT NOT NULL,
+          record_id TEXT NOT NULL,
+          company TEXT NOT NULL DEFAULT '',
+          position TEXT NOT NULL DEFAULT '',
+          industry TEXT NOT NULL DEFAULT '',
+          company_type TEXT NOT NULL DEFAULT '',
+          recruitment_type TEXT NOT NULL DEFAULT '',
+          target TEXT NOT NULL DEFAULT '',
+          location TEXT NOT NULL DEFAULT '',
+          education TEXT NOT NULL DEFAULT '',
+          exam TEXT NOT NULL DEFAULT '',
+          deadline TEXT NOT NULL DEFAULT '',
+          updated_date TEXT NOT NULL DEFAULT '',
+          search_text TEXT NOT NULL DEFAULT '',
+          PRIMARY KEY(base_token, table_id, record_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_feishu_search_updated ON feishu_record_search(base_token,updated_date);
+        CREATE INDEX IF NOT EXISTS idx_feishu_search_company ON feishu_record_search(base_token,company);
+        CREATE INDEX IF NOT EXISTS idx_feishu_annotation_status ON feishu_annotations(username,base_token,status,priority);
         ''')
         review_columns = {row['name'] for row in c.execute('PRAGMA table_info(company_reviews)')}
         if 'usage' not in review_columns:
@@ -556,6 +590,50 @@ def recording_worker():
             recording_wake.clear()
 
 
+FEISHU_INDEX_COLUMNS = ('company', 'position', 'industry', 'company_type', 'recruitment_type',
+                        'target', 'location', 'education', 'exam', 'deadline', 'updated_date', 'search_text')
+
+
+def index_feishu_record(c, base, table_id, record_id, record):
+    fields = record.get('fields') or {}
+    def pick(*names):
+        return next((str(fields[name]).strip() for name in names if fields.get(name) not in (None, '')), '')
+    values = {
+        'company': pick('公司名称', '企业名称', '单位名称'),
+        'position': pick('校招岗位', '招聘岗位', '岗位', '职位'),
+        'industry': pick('公司行业', '行业'),
+        'company_type': pick('企业性质', '单位性质'),
+        'recruitment_type': pick('招聘类型', '类型'),
+        'target': pick('招聘对象', '目标人群'),
+        'location': pick('工作地点', '工作城市'),
+        'education': pick('学历', '学历要求'),
+        'exam': pick('是否笔试', '笔试'),
+        'deadline': pick('网申截止', '截止时间', '截止日期'),
+        'updated_date': pick('网申更新', '更新时间', '更新日期'),
+    }
+    values['search_text'] = unicodedata.normalize('NFKC', ' '.join(str(v) for v in fields.values())).casefold()
+    c.execute('''INSERT INTO feishu_record_search
+      (base_token,table_id,record_id,company,position,industry,company_type,recruitment_type,target,location,education,exam,deadline,updated_date,search_text)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(base_token,table_id,record_id) DO UPDATE SET
+      company=excluded.company,position=excluded.position,industry=excluded.industry,
+      company_type=excluded.company_type,recruitment_type=excluded.recruitment_type,
+      target=excluded.target,location=excluded.location,education=excluded.education,
+      exam=excluded.exam,deadline=excluded.deadline,updated_date=excluded.updated_date,
+      search_text=excluded.search_text''',
+              (base, table_id, record_id, *(values[k] for k in FEISHU_INDEX_COLUMNS)))
+
+
+def ensure_feishu_search_index():
+    """Upgrade an existing raw mirror without making another 10k-row network request."""
+    with conn() as c:
+        rows = c.execute('''SELECT r.base_token,r.table_id,r.record_id,r.payload FROM feishu_records r
+            LEFT JOIN feishu_record_search s ON s.base_token=r.base_token AND s.table_id=r.table_id AND s.record_id=r.record_id
+            WHERE r.source_missing=0 AND s.record_id IS NULL''').fetchall()
+        for row in rows:
+            index_feishu_record(c, row['base_token'], row['table_id'], row['record_id'], json.loads(row['payload']))
+
+
 def run_feishu_sync():
     if not feishu_lock.acquire(blocking=False):
         return False
@@ -605,6 +683,7 @@ def run_feishu_sync():
                       ON CONFLICT(base_token,table_id,record_id) DO UPDATE SET
                       payload=excluded.payload,last_seen=excluded.last_seen,source_missing=0''',
                               (base, table_id, record_id, json.dumps(record, ensure_ascii=False), stamp, stamp))
+                    index_feishu_record(c, base, table_id, record_id, record)
                     count += 1
             c.execute("UPDATE feishu_sync_runs SET finished=?,status='success',tables=?,records=?,message=? WHERE id=?",
                       (stamp, len(snap['tables']), count, '全量读取成功', run_id))
@@ -960,27 +1039,130 @@ def feishu_manifest(request: Request):
 
 
 @app.get('/api/admin/feishu/records')
-def feishu_records(request: Request, table_id: str = '', q: str = '', limit: int = 100, offset: int = 0):
-    admin(request)
+def feishu_records(request: Request, table_id: str = '', q: str = '', limit: int = 100, offset: int = 0,
+                   status: str = '', priority: int = -1, industry: str = '', company_type: str = '',
+                   recruitment_type: str = '', location: str = '', education: str = '', exam: str = '',
+                   tag: str = '', sort: str = 'updated_date', direction: str = 'desc', group_by: str = ''):
+    username = admin(request)
+    ensure_feishu_search_index()
     limit = max(1, min(limit, 500)); offset = max(0, offset)
     base = feishu.target_config()['base_token']
-    args = [base]
-    sql = 'SELECT table_id,record_id,payload,first_seen,last_seen FROM feishu_records WHERE base_token=? AND source_missing=0'
+    allowed_filters = {'industry': industry, 'company_type': company_type, 'recruitment_type': recruitment_type,
+                       'location': location, 'education': education, 'exam': exam}
+    sort_columns = {'company': 's.company COLLATE NOCASE', 'position': 's.position COLLATE NOCASE',
+                    'industry': 's.industry COLLATE NOCASE', 'deadline': 's.deadline COLLATE NOCASE',
+                    'updated_date': 's.updated_date COLLATE NOCASE', 'priority': 'COALESCE(a.priority,0)',
+                    'status': "COALESCE(a.status,'待筛选') COLLATE NOCASE"}
+    sort_sql = sort_columns.get(sort, sort_columns['updated_date'])
+    direction_sql = 'ASC' if direction.lower() == 'asc' else 'DESC'
+    args = [username, base]
+    sql = '''SELECT r.table_id,r.record_id,r.payload,r.first_seen,r.last_seen,
+                    s.company,s.position,s.industry,s.company_type,s.recruitment_type,s.target,s.location,
+                    s.education,s.exam,s.deadline,s.updated_date,
+                    COALESCE(a.status,'待筛选') AS annotation_status,COALESCE(a.priority,0) AS annotation_priority,
+                    COALESCE(a.tags,'[]') AS annotation_tags,COALESCE(a.note,'') AS annotation_note,a.updated_at AS annotation_updated
+             FROM feishu_records r JOIN feishu_record_search s
+               ON s.base_token=r.base_token AND s.table_id=r.table_id AND s.record_id=r.record_id
+             LEFT JOIN feishu_annotations a ON a.username=? AND a.base_token=r.base_token
+               AND a.table_id=r.table_id AND a.record_id=r.record_id
+             WHERE r.base_token=? AND r.source_missing=0'''
     if table_id:
-        sql += ' AND table_id=?'; args.append(table_id)
+        sql += ' AND r.table_id=?'; args.append(table_id)
     if q:
-        sql += ' AND payload LIKE ?'; args.append('%' + q[:100] + '%')
+        sql += " AND s.search_text LIKE ? ESCAPE '\\'"
+        args.append('%' + unicodedata.normalize('NFKC', q[:100]).casefold().replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_') + '%')
+    for column, value in allowed_filters.items():
+        if value:
+            sql += f" AND s.{column} LIKE ? ESCAPE '\\'"
+            args.append('%' + value[:100].replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_') + '%')
+    if status:
+        sql += " AND COALESCE(a.status,'待筛选')=?"; args.append(status[:40])
+    if priority >= 0:
+        sql += ' AND COALESCE(a.priority,0)=?'; args.append(min(priority, 3))
+    if tag:
+        sql += " AND EXISTS(SELECT 1 FROM json_each(COALESCE(a.tags,'[]')) WHERE value=?)"; args.append(tag[:40])
+    where_part = sql[sql.index(' FROM feishu_records r'):]
+    group_columns = {'industry': 's.industry', 'company_type': 's.company_type',
+                     'recruitment_type': 's.recruitment_type', 'location': 's.location',
+                     'education': 's.education', 'exam': 's.exam',
+                     'annotation_status': "COALESCE(a.status,'待筛选')"}
+    group_sql = (group_columns[group_by] + ' COLLATE NOCASE, ') if group_by in group_columns else ''
+    order_sql = f' ORDER BY {group_sql}{sort_sql} {direction_sql},r.record_id ASC LIMIT ? OFFSET ?'
     with conn() as c:
-        total = c.execute('SELECT count(*) FROM (' + sql + ')', args).fetchone()[0]
-        rows = c.execute(sql + ' ORDER BY table_id,record_id LIMIT ? OFFSET ?', args + [limit, offset]).fetchall()
+        total = c.execute('SELECT count(*)' + where_part, args).fetchone()[0]
+        rows = [dict(row) for row in c.execute(sql + order_sql, args + [limit, offset]).fetchall()]
+        facet_rows = [dict(row) for row in c.execute('''SELECT COALESCE(a.status,'待筛选') AS annotation_status,
+            s.industry,s.company_type,s.recruitment_type,s.location,s.education,s.exam,
+            COALESCE(a.tags,'[]') AS annotation_tags''' + where_part, args).fetchall()]
+    facets = {}
+    for key in ('annotation_status', 'industry', 'company_type', 'recruitment_type', 'location', 'education', 'exam'):
+        facets[key] = {}
+        for row in facet_rows:
+            values = [row.get(key) or '未填写'] if key == 'annotation_status' else [x.strip() for x in (row.get(key) or '未填写').split('、') if x.strip()]
+            for val in set(values):
+                facets[key][val] = facets[key].get(val, 0) + 1
+        facets[key] = dict(sorted(facets[key].items(), key=lambda pair: -pair[1])[:80])
+    facets['tags'] = {}
+    for row in facet_rows:
+        try: tags = json.loads(row['annotation_tags'])
+        except json.JSONDecodeError: tags = []
+        for tag_value in set(tags):
+            facets['tags'][tag_value] = facets['tags'].get(tag_value, 0) + 1
+    facets['tags'] = dict(sorted(facets['tags'].items(), key=lambda pair: -pair[1])[:80])
     items = []
     for row in rows:
         try: payload = json.loads(row['payload'])
-        except json.JSONDecodeError: payload = {'raw': row['payload']}
+        except json.JSONDecodeError: payload = {'fields': {}}
+        try: tags = json.loads(row['annotation_tags'] or '[]')
+        except json.JSONDecodeError: tags = []
         items.append({'table_id': row['table_id'], 'record_id': row['record_id'], 'fields': payload.get('fields', payload),
                       'created_time': payload.get('created_time'), 'last_modified_time': payload.get('last_modified_time'),
-                      'first_seen': row['first_seen'], 'last_seen': row['last_seen']})
-    return {'items': items, 'total': total, 'limit': limit, 'offset': offset, 'status': feishu_status_payload()}
+                      'first_seen': row['first_seen'], 'last_seen': row['last_seen'],
+                      'annotation': {'status': row['annotation_status'], 'priority': row['annotation_priority'],
+                                     'tags': tags, 'note': row['annotation_note'], 'updated_at': row['annotation_updated']},
+                      'group_value': row.get('annotation_status' if group_by == 'annotation_status' else group_by, '') if group_by else ''})
+    return {'items': items, 'total': total, 'limit': limit, 'offset': offset, 'facets': facets,
+            'sort': sort, 'direction': direction_sql.lower(), 'group_by': group_by, 'status': feishu_status_payload()}
+
+
+class FeishuAnnotationUpdate(BaseModel):
+    status: str = Field(default='待筛选', min_length=1, max_length=40)
+    priority: int = Field(default=0, ge=0, le=3)
+    tags: list[str] = Field(default_factory=list, max_length=20)
+    note: str = Field(default='', max_length=4000)
+
+
+FEISHU_STATUSES = {'待筛选', '关注', '已投递', '笔试', '面试', 'Offer', '暂不考虑'}
+
+
+@app.get('/api/admin/feishu/annotations')
+def feishu_annotations(request: Request):
+    username = admin(request); base = feishu.target_config()['base_token']
+    with conn() as c:
+        rows = c.execute('SELECT table_id,record_id,status,priority,tags,note,updated_at FROM feishu_annotations WHERE username=? AND base_token=?', (username, base)).fetchall()
+    result = []
+    for row in rows:
+        item = dict(row)
+        try: item['tags'] = json.loads(item['tags'] or '[]')
+        except json.JSONDecodeError: item['tags'] = []
+        result.append(item)
+    return {'items': result}
+
+
+@app.put('/api/admin/feishu/annotations/{table_id}/{record_id}')
+def update_feishu_annotation(table_id: str, record_id: str, body: FeishuAnnotationUpdate, request: Request):
+    username = admin(request); base = feishu.target_config()['base_token']
+    if body.status.strip() not in FEISHU_STATUSES:
+        raise HTTPException(422, '无效的跟进状态')
+    tags = list(dict.fromkeys(str(tag).strip()[:40] for tag in body.tags if str(tag).strip()))[:20]
+    with conn() as c:
+        if not c.execute('SELECT 1 FROM feishu_records WHERE base_token=? AND table_id=? AND record_id=? AND source_missing=0', (base, table_id, record_id)).fetchone():
+            raise HTTPException(404, '飞书记录不存在')
+        c.execute('''INSERT INTO feishu_annotations(username,base_token,table_id,record_id,status,priority,tags,note,updated_at)
+                     VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(username,base_token,table_id,record_id) DO UPDATE SET
+                     status=excluded.status,priority=excluded.priority,tags=excluded.tags,note=excluded.note,updated_at=excluded.updated_at''',
+                  (username, base, table_id, record_id, body.status.strip(), body.priority, json.dumps(tags, ensure_ascii=False), body.note, now()))
+    return {'ok': True, 'status': body.status.strip(), 'priority': body.priority, 'tags': tags, 'note': body.note}
 
 
 class ReviewRequest(BaseModel):
