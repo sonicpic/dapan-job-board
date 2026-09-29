@@ -20,7 +20,7 @@ const GROUPS = [
   ["company_type", "企业性质"], ["recruitment_type", "招聘类型"],
   ["location", "工作地点"], ["education", "学历"],
 ];
-const PAGE_SIZE = 30;
+const DEFAULT_PAGE_SIZE = 30;
 const display = (value) => value == null || value === "" ? "—" : typeof value === "object" ? JSON.stringify(value) : String(value);
 const safeHref = (value) => typeof value === "string" && /^https?:\/\/\S+$/i.test(value.trim()) ? value.trim() : null;
 const labelForFocus = (value) => FOCUS.find((item) => item.value === value)?.label || "关注";
@@ -86,6 +86,7 @@ export default function FeishuWorkspace() {
   const [direction, setDirection] = useState("desc");
   const [groupBy, setGroupBy] = useState("");
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [revision, setRevision] = useState(0);
   const [selected, setSelected] = useState(null);
   const [draft, setDraft] = useState(null);
@@ -110,7 +111,7 @@ export default function FeishuWorkspace() {
     if (!manifest) return;
     let active = true;
     setLoading(true);
-    const params = new URLSearchParams({ q: search, sort, direction, group_by: groupBy, limit: String(PAGE_SIZE), offset: String((page - 1) * PAGE_SIZE) });
+    const params = new URLSearchParams({ q: search, sort, direction, group_by: groupBy, limit: String(pageSize), offset: String((page - 1) * pageSize) });
     Object.entries(filters).forEach(([key, values]) => (values || []).forEach((value) => params.append(key, String(value))));
     request(`/admin/feishu/records?${params}`).then((result) => {
       if (!active) return;
@@ -118,7 +119,7 @@ export default function FeishuWorkspace() {
     }).catch((reason) => { if (active) setError(reason.message); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [!!manifest, manifest?.status?.last_run?.id, search, sort, direction, groupBy, page, filters, revision]);
+  }, [!!manifest, manifest?.status?.last_run?.id, search, sort, direction, groupBy, page, pageSize, filters, revision]);
 
   const setFacet = (key, values) => { setFilters((old) => ({ ...old, [key]: values })); setPage(1); };
   const reset = () => { setQuery(""); setSearch(""); setFilters({}); setFilterResetKey((value) => value + 1); setPage(1); };
@@ -195,8 +196,8 @@ export default function FeishuWorkspace() {
     { title: "", key: "detail", width: 54, fixed: "right", render: (_, row) => <Tooltip title="查看详情与跟进">
       <Button type="text" icon={<EyeOutlined />} aria-label={`查看 ${row.fields?.["公司名称"] || "公司"} 详情`} onClick={() => open(row)} /></Tooltip> },
   ];
-  const onTableChange = (_, __, sorter) => {
-    if (!sorter?.columnKey) return;
+  const onTableChange = (_, __, sorter, extra) => {
+    if (extra.action !== "sort" || !sorter?.columnKey) return;
     setSort(sorter.columnKey); setDirection(sorter.order === "ascend" ? "asc" : "desc"); setPage(1);
   };
   const activeCount = Object.values(filters).reduce((sum, values) => sum + (values?.length || 0), 0) + Number(!!query.trim());
@@ -237,7 +238,8 @@ export default function FeishuWorkspace() {
     <Table className="feishu-table" rowKey={(row) => `${row.table_id}/${row.record_id}`} dataSource={rows} columns={columns}
       loading={loading} size="middle" tableLayout="fixed" onChange={onTableChange} scroll={{ x: groupBy ? 1470 : 1352 }}
       locale={{ emptyText: <Empty description="没有找到符合条件的职位" /> }}
-      pagination={{ current: page, pageSize: PAGE_SIZE, total, showSizeChanger: false, onChange: setPage,
+      pagination={{ current: page, pageSize, total, showSizeChanger: true, pageSizeOptions: ["10", "20", "30", "50", "100"],
+        onChange: (nextPage, nextSize) => { if (nextSize !== pageSize) { setPageSize(nextSize); setPage(1); } else setPage(nextPage); },
         showTotal: (count, range) => `${range[0]}–${range[1]} / ${count.toLocaleString()}` }} />
 
     <Drawer className="feishu-detail-drawer" open={!!selected} onClose={() => { setSelected(null); setDraft(null); }} width={740}
