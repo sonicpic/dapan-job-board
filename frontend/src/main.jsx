@@ -1689,6 +1689,82 @@ function PublicPage() {
   );
 }
 
+function FeishuPanel() {
+  const { message } = AntApp.useApp();
+  const [manifest, setManifest] = useState(null);
+  const [rows, setRows] = useState([]);
+  const [total, setTotal] = useState(0);
+  const [tableId, setTableId] = useState("");
+  const [query, setQuery] = useState("");
+  const [page, setPage] = useState(1);
+  const [selected, setSelected] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const loadManifest = async () => {
+    try { setManifest(await api("/admin/feishu/manifest")); setError(""); }
+    catch (e) { setError(e.message); }
+  };
+  useEffect(() => { loadManifest(); }, []);
+  useEffect(() => {
+    if (!manifest) return;
+    let alive = true;
+    setLoading(true);
+    const params = new URLSearchParams({ table_id: tableId, q: query, limit: "30", offset: String((page - 1) * 30) });
+    api(`/admin/feishu/records?${params}`).then((result) => {
+      if (alive) { setRows(result.items); setTotal(result.total); setError(""); }
+    }).catch((e) => { if (alive) setError(e.message); })
+      .finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, [!!manifest, tableId, query, page, manifest?.status?.last_run?.id]);
+  const sync = async () => {
+    setBusy(true);
+    try {
+      await api("/admin/feishu/sync", "POST");
+      message.success("飞书全量同步已启动");
+      await loadManifest();
+    } catch (e) { message.error(e.message); }
+    finally { setBusy(false); }
+  };
+  const status = manifest?.status;
+  const chosen = manifest?.tables.find((item) => item.table_id === tableId);
+  const display = (value) => {
+    if (value == null || value === "") return "—";
+    if (typeof value === "string" || typeof value === "number") return String(value);
+    return JSON.stringify(value);
+  };
+  return <>
+    {error && <Alert type="error" message={error} showIcon style={{ marginBottom: 16 }} />}
+    <div className="admin-toolbar">
+      <div><Title level={4}>飞书资料库</Title><Text type="secondary">仅管理员可见 · 保留原始字段与记录</Text></div>
+      <Space>
+        <Button icon={<ReloadOutlined />} onClick={loadManifest}>刷新状态</Button>
+        <Button type="primary" icon={<SyncOutlined />} loading={busy || status?.running} disabled={!status?.configured} onClick={sync}>全量同步</Button>
+      </Space>
+    </div>
+    {status && !status.configured && <Alert type="warning" showIcon message="飞书只读应用尚未配置" description="在服务器私有 .env 中设置 FEISHU_APP_ID、FEISHU_APP_SECRET、FEISHU_BASE_TOKEN 后重建容器。" style={{ marginBottom: 16 }} />}
+    {status?.last_run?.status === "error" && <Alert type="error" showIcon message="上次飞书同步失败，旧数据已保留" description={status.last_run.message} style={{ marginBottom: 16 }} />}
+    <Space wrap style={{ marginBottom: 16 }}>
+      <Tag>数据表 {status?.tables ?? 0}</Tag><Tag>当前记录 {status?.records ?? 0}</Tag>
+      {status?.last_run && <Tag color={status.last_run.status === "success" ? "green" : status.last_run.status === "running" ? "blue" : "red"}>最近同步：{status.last_run.status === "success" ? "成功" : status.last_run.status === "running" ? "进行中" : "失败"}</Tag>}
+      {status?.last_run?.finished && <Text type="secondary">{fmt(status.last_run.finished, "YYYY-MM-DD HH:mm")}</Text>}
+    </Space>
+    <div className="admin-toolbar">
+      <Select style={{ minWidth: 230 }} value={tableId} onChange={(v) => { setTableId(v); setPage(1); }} options={[{ value: "", label: "全部数据表" }, ...(manifest?.tables || []).map((t) => ({ value: t.table_id, label: `${t.name || t.table_id} · ${t.records}` }))]} />
+      <Input.Search style={{ maxWidth: 340 }} placeholder="搜索原始记录" allowClear value={query} onChange={(e) => { setQuery(e.target.value); setPage(1); }} />
+    </div>
+    {chosen && <Collapse style={{ marginBottom: 16 }} items={[{ key: "fields", label: `字段 ${chosen.fields.length} · 视图 ${chosen.views.length}`, children: <Space wrap>{chosen.fields.map((f) => <Tag key={f.field_id}>{f.name || f.field_id} · {f.type}</Tag>)}</Space> }]} />}
+    <Table rowKey={(r) => `${r.table_id}/${r.record_id}`} loading={loading} dataSource={rows} scroll={{ x: 820 }} pagination={{ current: page, pageSize: 30, total, showSizeChanger: false, onChange: setPage, showTotal: (n) => `共 ${n} 条` }} columns={[
+      { title: "数据表", dataIndex: "table_id", width: 170, render: (v) => manifest?.tables.find((t) => t.table_id === v)?.name || v },
+      { title: "内容预览", dataIndex: "fields", ellipsis: true, render: (fields) => Object.entries(fields || {}).slice(0, 4).map(([k, v]) => `${k}: ${display(v)}`).join(" · ") },
+      { title: "操作", width: 90, render: (_, row) => <Button type="link" onClick={() => setSelected(row)}>详情</Button> },
+    ]} />
+    <Drawer open={!!selected} onClose={() => setSelected(null)} title="飞书记录详情" width={720}>
+      {selected && <Descriptions column={1} bordered size="small" items={Object.entries(selected.fields || {}).map(([key, value]) => ({ key, label: key, children: <div style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{display(value)}</div> }))} />}
+    </Drawer>
+  </>;
+}
+
 function AdminPage() {
   const { message } = AntApp.useApp();
   const screens = Grid.useBreakpoint();
@@ -2241,6 +2317,7 @@ function AdminPage() {
               if (key === "settings") settingsForm.setFieldsValue(data.config);
             }}
             items={[
+              { key: "feishu", label: <Space><BookOutlined />飞书资料库</Space>, children: <FeishuPanel /> },
               {
                 key: "records",
                 label: (

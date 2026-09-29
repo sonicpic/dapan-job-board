@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 from source import SOURCE, TZ, fetch_source, safe_link, normalize_date
 import review
 import recording
+import feishu
 
 DATA = Path(os.getenv('DATA_DIR', '/app/data'))
 DATA.mkdir(parents=True, exist_ok=True)
@@ -35,6 +36,8 @@ review_lock = threading.Lock()
 review_wake = threading.Event()
 recording_lock = threading.Lock()
 recording_wake = threading.Event()
+feishu_lock = threading.Lock()
+feishu_wake = threading.Event()
 MAX_REVIEW_PENDING = 5
 MAX_AUDIO_BYTES = int(os.getenv('MAX_AUDIO_UPLOAD_MB', '500')) * 1024 * 1024
 RECORDINGS = DATA / 'recordings'
@@ -132,6 +135,52 @@ def init():
           record_id TEXT NOT NULL,
           created_at TEXT NOT NULL,
           PRIMARY KEY(username,record_id)
+        );
+        CREATE TABLE IF NOT EXISTS feishu_tables(
+          base_token TEXT NOT NULL,
+          table_id TEXT NOT NULL,
+          name TEXT,
+          payload TEXT NOT NULL,
+          synced_at TEXT NOT NULL,
+          PRIMARY KEY(base_token, table_id)
+        );
+        CREATE TABLE IF NOT EXISTS feishu_fields(
+          base_token TEXT NOT NULL,
+          table_id TEXT NOT NULL,
+          field_id TEXT NOT NULL,
+          name TEXT,
+          type INTEGER,
+          payload TEXT NOT NULL,
+          synced_at TEXT NOT NULL,
+          PRIMARY KEY(base_token, table_id, field_id)
+        );
+        CREATE TABLE IF NOT EXISTS feishu_views(
+          base_token TEXT NOT NULL,
+          table_id TEXT NOT NULL,
+          view_id TEXT NOT NULL,
+          name TEXT,
+          payload TEXT NOT NULL,
+          synced_at TEXT NOT NULL,
+          PRIMARY KEY(base_token, table_id, view_id)
+        );
+        CREATE TABLE IF NOT EXISTS feishu_records(
+          base_token TEXT NOT NULL,
+          table_id TEXT NOT NULL,
+          record_id TEXT NOT NULL,
+          payload TEXT NOT NULL,
+          first_seen TEXT NOT NULL,
+          last_seen TEXT NOT NULL,
+          source_missing INTEGER NOT NULL DEFAULT 0,
+          PRIMARY KEY(base_token, table_id, record_id)
+        );
+        CREATE TABLE IF NOT EXISTS feishu_sync_runs(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          started TEXT NOT NULL,
+          finished TEXT,
+          status TEXT NOT NULL,
+          tables INTEGER NOT NULL DEFAULT 0,
+          records INTEGER NOT NULL DEFAULT 0,
+          message TEXT
         );
         ''')
         review_columns = {row['name'] for row in c.execute('PRAGMA table_info(company_reviews)')}
@@ -505,17 +554,90 @@ def recording_worker():
             recording_wake.clear()
 
 
+def run_feishu_sync():
+    if not feishu_lock.acquire(blocking=False):
+        return False
+    started = now()
+    with conn() as c:
+        run_id = c.execute("INSERT INTO feishu_sync_runs(started,status) VALUES(?,'running')", (started,)).lastrowid
+    try:
+        snap = feishu.snapshot()
+        if not snap['tables']:
+            raise feishu.FeishuError('飞书 Base 未返回任何数据表，旧数据已保留')
+        base = snap['base_token']
+        stamp = now()
+        count = 0
+        # Fetch all pages before this transaction; an API failure cannot partially replace the mirror.
+        with conn() as c:
+            c.execute('BEGIN IMMEDIATE')
+            c.execute('DELETE FROM feishu_tables WHERE base_token=?', (base,))
+            c.execute('DELETE FROM feishu_fields WHERE base_token=?', (base,))
+            c.execute('DELETE FROM feishu_views WHERE base_token=?', (base,))
+            c.execute('UPDATE feishu_records SET source_missing=1 WHERE base_token=?', (base,))
+            for entry in snap['tables']:
+                table = entry['table']
+                table_id = table.get('table_id') or table.get('id')
+                if not table_id:
+                    raise feishu.FeishuError('飞书数据表缺少 table_id')
+                c.execute('INSERT INTO feishu_tables VALUES(?,?,?,?,?)',
+                          (base, table_id, table.get('name'), json.dumps(table, ensure_ascii=False), stamp))
+                for field in entry['fields']:
+                    field_id = field.get('field_id') or field.get('id')
+                    if not field_id:
+                        raise feishu.FeishuError(f'数据表 {table_id} 的字段缺少 field_id')
+                    c.execute('INSERT INTO feishu_fields VALUES(?,?,?,?,?,?,?)',
+                              (base, table_id, field_id, field.get('field_name') or field.get('name'),
+                               field.get('type'), json.dumps(field, ensure_ascii=False), stamp))
+                for view in entry['views']:
+                    view_id = view.get('view_id') or view.get('id')
+                    if not view_id:
+                        raise feishu.FeishuError(f'数据表 {table_id} 的视图缺少 view_id')
+                    c.execute('INSERT INTO feishu_views VALUES(?,?,?,?,?,?)',
+                              (base, table_id, view_id, view.get('view_name') or view.get('name'),
+                               json.dumps(view, ensure_ascii=False), stamp))
+                for record in entry['records']:
+                    record_id = record.get('record_id') or record.get('id')
+                    if not record_id:
+                        raise feishu.FeishuError(f'数据表 {table_id} 的记录缺少 record_id')
+                    c.execute('''INSERT INTO feishu_records VALUES(?,?,?,?,?,?,0)
+                      ON CONFLICT(base_token,table_id,record_id) DO UPDATE SET
+                      payload=excluded.payload,last_seen=excluded.last_seen,source_missing=0''',
+                              (base, table_id, record_id, json.dumps(record, ensure_ascii=False), stamp, stamp))
+                    count += 1
+            c.execute("UPDATE feishu_sync_runs SET finished=?,status='success',tables=?,records=?,message=? WHERE id=?",
+                      (stamp, len(snap['tables']), count, '全量读取成功', run_id))
+        return True
+    except Exception as exc:
+        with conn() as c:
+            c.execute("UPDATE feishu_sync_runs SET finished=?,status='error',message=? WHERE id=?",
+                      (now(), str(exc)[:800], run_id))
+        return False
+    finally:
+        feishu_lock.release()
+
+
+def feishu_worker():
+    # The Feishu source is optional and independent of KDocs.
+    while not stop.is_set():
+        if feishu.public_config()['configured']:
+            run_feishu_sync()
+        feishu_wake.wait(INTERVAL)
+        feishu_wake.clear()
+
+
 @asynccontextmanager
 async def lifespan(app):
     init()
     threading.Thread(target=worker, daemon=True).start()
     threading.Thread(target=review_worker, daemon=True).start()
     threading.Thread(target=recording_worker, daemon=True).start()
+    threading.Thread(target=feishu_worker, daemon=True).start()
     yield
     stop.set()
     wake.set()
     review_wake.set()
     recording_wake.set()
+    feishu_wake.set()
 
 
 app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
@@ -761,6 +883,84 @@ def sync(request: Request):
         audit(c, '手动同步')
     threading.Thread(target=run_sync, daemon=True).start()
     return {'ok': True}
+
+
+def feishu_status_payload():
+    cfg = feishu.public_config()
+    base = feishu.target_config()['base_token']
+    with conn() as c:
+        last = c.execute('SELECT * FROM feishu_sync_runs ORDER BY id DESC LIMIT 1').fetchone()
+        counts = c.execute('''SELECT count(*) AS records,
+          count(DISTINCT table_id) AS tables FROM feishu_records
+          WHERE base_token=? AND source_missing=0''', (base,)).fetchone()
+    return {
+        **cfg,
+        'running': feishu_lock.locked(),
+        'tables': int(counts['tables'] or 0),
+        'records': int(counts['records'] or 0),
+        'last_run': dict(last) if last else None,
+    }
+
+
+@app.get('/api/admin/feishu/status')
+def feishu_status(request: Request):
+    admin(request)
+    return feishu_status_payload()
+
+
+@app.post('/api/admin/feishu/sync')
+def feishu_sync(request: Request):
+    admin(request)
+    if not feishu.public_config()['configured']:
+        raise HTTPException(400, '飞书只读应用尚未配置，请设置 FEISHU_APP_ID、FEISHU_APP_SECRET 和 FEISHU_BASE_TOKEN')
+    if feishu_lock.locked():
+        raise HTTPException(409, '飞书全量同步正在进行中')
+    threading.Thread(target=run_feishu_sync, daemon=True).start()
+    return {'ok': True}
+
+
+@app.get('/api/admin/feishu/manifest')
+def feishu_manifest(request: Request):
+    admin(request)
+    base = feishu.target_config()['base_token']
+    with conn() as c:
+        tables = [dict(r) for r in c.execute(
+            'SELECT base_token,table_id,name,synced_at FROM feishu_tables WHERE base_token=? ORDER BY table_id', (base,))]
+        for table in tables:
+            table['fields'] = [dict(r) for r in c.execute(
+                'SELECT field_id,name,type,payload FROM feishu_fields WHERE base_token=? AND table_id=? ORDER BY field_id',
+                (base, table['table_id']))]
+            table['views'] = [dict(r) for r in c.execute(
+                'SELECT view_id,name,payload FROM feishu_views WHERE base_token=? AND table_id=? ORDER BY view_id',
+                (base, table['table_id']))]
+            table['records'] = c.execute(
+                'SELECT count(*) FROM feishu_records WHERE base_token=? AND table_id=? AND source_missing=0',
+                (base, table['table_id'])).fetchone()[0]
+    return {'base_token': base, 'tables': tables, 'status': feishu_status_payload()}
+
+
+@app.get('/api/admin/feishu/records')
+def feishu_records(request: Request, table_id: str = '', q: str = '', limit: int = 100, offset: int = 0):
+    admin(request)
+    limit = max(1, min(limit, 500)); offset = max(0, offset)
+    base = feishu.target_config()['base_token']
+    args = [base]
+    sql = 'SELECT table_id,record_id,payload,first_seen,last_seen FROM feishu_records WHERE base_token=? AND source_missing=0'
+    if table_id:
+        sql += ' AND table_id=?'; args.append(table_id)
+    if q:
+        sql += ' AND payload LIKE ?'; args.append('%' + q[:100] + '%')
+    with conn() as c:
+        total = c.execute('SELECT count(*) FROM (' + sql + ')', args).fetchone()[0]
+        rows = c.execute(sql + ' ORDER BY table_id,record_id LIMIT ? OFFSET ?', args + [limit, offset]).fetchall()
+    items = []
+    for row in rows:
+        try: payload = json.loads(row['payload'])
+        except json.JSONDecodeError: payload = {'raw': row['payload']}
+        items.append({'table_id': row['table_id'], 'record_id': row['record_id'], 'fields': payload.get('fields', payload),
+                      'created_time': payload.get('created_time'), 'last_modified_time': payload.get('last_modified_time'),
+                      'first_seen': row['first_seen'], 'last_seen': row['last_seen']})
+    return {'items': items, 'total': total, 'limit': limit, 'offset': offset, 'status': feishu_status_payload()}
 
 
 class ReviewRequest(BaseModel):
