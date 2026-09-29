@@ -138,3 +138,36 @@ def test_multiselect_filters_and_true_deadline_sort(client):
         assert client.put(path, json={'status': '关注', 'priority': 3}).status_code == 200
         result = client.get('/api/admin/feishu/records', params={'focus': 3}).json()
         assert [item['record_id'] for item in result['items']] == ['rec-late']
+
+
+def test_all_facet_options_are_available_and_filter_counts_match(client):
+    records = [
+        {'record_id': f'city-{index}', 'fields': {'公司名称': f'公司{index}', '工作地点': f'城市{index}'}}
+        for index in range(100)
+    ] + [
+        {'record_id': 'xiong-an', 'fields': {'公司名称': '甲', '工作地点': '北京、雄安'}},
+        {'record_id': 'xiong-an-long', 'fields': {'公司名称': '乙', '工作地点': '河北雄安'}},
+        {'record_id': 'blank', 'fields': {'公司名称': '丙', '工作地点': ''}},
+        {'record_id': 'beijing-city', 'fields': {'公司名称': '丁', '工作地点': '北京市'}},
+        {'record_id': 'slash', 'fields': {'公司名称': '戊', '工作地点': '广州/深圳'}},
+        {'record_id': 'comma', 'fields': {'公司名称': '己', '工作地点': '成都，杭州'}},
+    ]
+    config = {'base_token': 'app-test', 'url': '', 'table_id': 'tbl1', 'view_id': 'vew1'}
+    with patch.object(feishu, 'target_config', return_value=config), \
+         patch.object(feishu, 'snapshot', return_value=sample_snapshot(records)):
+        assert app.run_feishu_sync()
+        sign_in(client)
+        def search(params):
+            response = client.get('/api/admin/feishu/records', params=params)
+            assert response.status_code == 200, response.text
+            return response.json()
+        facets = search({})['facets']['location']
+        assert len(facets) == 109
+        assert facets['雄安'] == 1
+        assert facets['未填写'] == 1
+        assert search({'location': '雄安'})['total'] == facets['雄安']
+        assert search({'location': '北京'})['total'] == facets['北京']
+        assert search({'location': '未填写'})['total'] == facets['未填写']
+        assert search({'location': '广州'})['total'] == facets['广州'] == 1
+        assert search({'location': '杭州'})['total'] == facets['杭州'] == 1
+        assert search({'q': '雄安'})['total'] == 2

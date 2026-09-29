@@ -38,17 +38,29 @@ async function request(path, method = "GET", body) {
 
 function FacetRow({ title, values, selected, onChange, labels = {}, color = "default", limit = 14 }) {
   const [expanded, setExpanded] = useState(false);
-  const entries = Object.entries(values || {}).sort((a, b) => b[1] - a[1]);
-  const visible = expanded ? entries : entries.slice(0, limit);
+  const [term, setTerm] = useState("");
+  const entries = Object.entries(values || {}).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], "zh-CN"));
+  const matching = term.trim() ? entries.filter(([value]) => (labels[value] || value).toLocaleLowerCase().includes(term.trim().toLocaleLowerCase())) : entries;
+  const shown = expanded ? matching : matching.slice(0, limit);
+  const visible = [
+    ...(selected || []).filter((value) => !shown.some(([option]) => option === value)).map((value) => [value, values?.[value] || 0]),
+    ...shown,
+  ];
   return <div className="feishu-facet-row">
     <span className="feishu-facet-name">{title}</span>
-    <div className="feishu-facet-options">
-      <Button type="text" className={!selected?.length ? "selected" : ""} onClick={() => onChange([])}>不限</Button>
-      {visible.map(([value, count]) => <Button type="text" key={value} className={selected?.includes(value) ? "selected" : ""}
-        onClick={() => onChange(selected?.includes(value) ? selected.filter((item) => item !== value) : [...(selected || []), value])}>
-        {color !== "default" && <span className={`feishu-dot feishu-dot-${color}`} />}{labels[value] || value}<small>{count}</small>
-      </Button>)}
-      {entries.length > limit && <Button type="link" className="feishu-expand" onClick={() => setExpanded(!expanded)}>{expanded ? "收起" : `展开 ${entries.length - limit} 项`}</Button>}
+    <div className="feishu-facet-main">
+      {entries.length > limit && <Input size="small" allowClear prefix={<SearchOutlined />} className="feishu-facet-search"
+        placeholder={`查找${title}`} aria-label={`查找${title}筛选项`} value={term} onChange={(event) => setTerm(event.target.value)} />}
+      <div className={`feishu-facet-options${expanded ? " expanded" : ""}`}>
+        <Button type="text" className={!selected?.length ? "selected" : ""} onClick={() => onChange([])}>不限</Button>
+        {visible.map(([value, count]) => <Button type="text" key={value} className={selected?.includes(value) ? "selected" : ""}
+          onClick={() => onChange(selected?.includes(value) ? selected.filter((item) => item !== value) : [...(selected || []), value])}>
+          {color !== "default" && <span className={`feishu-dot feishu-dot-${color}`} />}{labels[value] || value}<small>{count}</small>
+        </Button>)}
+        {term && matching.length === 0 && <span className="feishu-facet-empty">没有匹配的筛选项</span>}
+      </div>
+      {matching.length > limit && <Button type="link" className="feishu-expand" onClick={() => setExpanded(!expanded)}>
+        {expanded ? "收起" : `展开全部 ${matching.length} 项`}</Button>}
     </div>
   </div>;
 }

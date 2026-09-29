@@ -827,11 +827,15 @@ input {
 .feishu-filter-panel > .ant-input-affix-wrapper { width: min(550px, 100%); margin-bottom: 9px; border: 0; border-bottom: 1px solid #dfe7df; border-radius: 0; box-shadow: none !important; background: transparent; }
 .feishu-facet-row { display: flex; gap: 18px; min-height: 43px; padding: 9px 0; border-top: 1px solid #f0f3ef; }
 .feishu-facet-name { width: 72px; flex: 0 0 72px; padding-top: 5px; color: #61736a; font-size: 12px; font-weight: 600; }
+.feishu-facet-main { flex: 1; min-width: 0; }
+.feishu-facet-search { width: min(210px, 100%); margin: 0 0 6px; border-radius: 4px; }
 .feishu-facet-options { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 5px; }
+.feishu-facet-options.expanded { max-height: 210px; overflow-y: auto; align-content: flex-start; }
 .feishu-facet-options .ant-btn { height: 27px; padding: 2px 8px; color: #74847b; border-radius: 4px; font-size: 12px; }
 .feishu-facet-options .ant-btn:hover, .feishu-facet-options .ant-btn.selected { color: #176456; background: #eaf5ed; }
 .feishu-facet-options .ant-btn small { margin-left: 5px; color: #a3aea6; font-size: 10px; }
 .feishu-facet-options .ant-btn.selected small { color: #4e9676; }
+.feishu-facet-empty { padding: 5px 8px; color: #98a59c; font-size: 12px; }
 .feishu-expand { color: #39816b !important; }
 .feishu-dot { width: 5px; height: 5px; margin-right: 4px; border-radius: 50%; background: #8d9b91; }
 .feishu-dot-status { background: #d19a35; }

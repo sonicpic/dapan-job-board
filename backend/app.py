@@ -55,10 +55,25 @@ def now():
     return dt.datetime.now(TZ).isoformat(timespec='seconds')
 
 
+def feishu_facet_values(value, field=''):
+    """Return the same selectable values for facet counts and record filtering."""
+    raw = unicodedata.normalize('NFKC', str(value or '')).replace('\u200b', '').replace('\ufeff', '').strip()
+    if not raw:
+        return ('未填写',)
+    separators = r'[、,;；/\n]+' if field == 'location' else r'[、,;；\n]+'
+    values = tuple(dict.fromkeys(part.strip() for part in re.split(separators, raw) if part.strip()))
+    return values or ('未填写',)
+
+
+def feishu_facet_contains(value, choice, field):
+    return int(str(choice) in feishu_facet_values(value, field))
+
+
 def conn():
     c = sqlite3.connect(DB, timeout=20)
     c.row_factory = sqlite3.Row
     c.execute('PRAGMA journal_mode=WAL')
+    c.create_function('feishu_facet_contains', 3, feishu_facet_contains, deterministic=True)
     return c
 
 
@@ -1179,8 +1194,8 @@ def feishu_records(request: Request, table_id: str = '', q: str = '', limit: int
     for column, values in allowed_filters.items():
         choices = [str(value)[:100] for value in values if value][:20]
         if choices:
-            sql += ' AND (' + ' OR '.join(f"s.{column} LIKE ? ESCAPE '\\'" for _ in choices) + ')'
-            args.extend('%' + value.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_') + '%' for value in choices)
+            sql += ' AND (' + ' OR '.join(f"feishu_facet_contains(s.{column},?,'{column}')" for _ in choices) + ')'
+            args.extend(choices)
     statuses = [value[:40] for value in status if value][:len(FEISHU_STATUSES)]
     if statuses:
         sql += " AND COALESCE(a.status,'待筛选') IN (" + ','.join('?' for _ in statuses) + ')'
@@ -1212,17 +1227,17 @@ def feishu_records(request: Request, table_id: str = '', q: str = '', limit: int
     for key in ('annotation_status', 'industry', 'company_type', 'recruitment_type', 'location', 'education', 'exam'):
         facets[key] = {}
         for row in facet_rows:
-            values = [row.get(key) or '未填写'] if key == 'annotation_status' else [x.strip() for x in (row.get(key) or '未填写').split('、') if x.strip()]
+            values = [row.get(key) or '未填写'] if key == 'annotation_status' else feishu_facet_values(row.get(key), key)
             for val in set(values):
                 facets[key][val] = facets[key].get(val, 0) + 1
-        facets[key] = dict(sorted(facets[key].items(), key=lambda pair: -pair[1])[:80])
+        facets[key] = dict(sorted(facets[key].items(), key=lambda pair: (-pair[1], pair[0])))
     facets['tags'] = {}
     for row in facet_rows:
         try: tags = json.loads(row['annotation_tags'])
         except json.JSONDecodeError: tags = []
         for tag_value in set(tags):
             facets['tags'][tag_value] = facets['tags'].get(tag_value, 0) + 1
-    facets['tags'] = dict(sorted(facets['tags'].items(), key=lambda pair: -pair[1])[:80])
+    facets['tags'] = dict(sorted(facets['tags'].items(), key=lambda pair: (-pair[1], pair[0])))
     facets['focus'] = {str(level): sum(row['annotation_status'] == '关注' and row['annotation_priority'] == level for row in facet_rows)
                        for level in (1, 2, 3)}
     items = []
