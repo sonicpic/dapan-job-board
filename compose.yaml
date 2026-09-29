@@ -52,7 +52,7 @@ services:
       FEISHU_SYNC_INTERVAL_SECONDS: ${FEISHU_SYNC_INTERVAL_SECONDS:-3600}
     read_only: true
     tmpfs:
-      - /tmp:size=32m
+      - /tmp:size=256m
     cap_drop:
       - ALL
     security_opt:
