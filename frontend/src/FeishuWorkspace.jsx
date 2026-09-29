@@ -145,7 +145,7 @@ export default function FeishuWorkspace() {
         </Tooltip>
       </div> },
     { title: "跟进", key: "status", width: 118, sorter: true, sortDirections: ["ascend", "descend", "ascend"], sortOrder: sortOrder("status"),
-      render: (_, row) => <Tag color={COLORS[row.annotation.status]}>{row.annotation.status === "关注" ? labelForFocus(row.annotation.priority) : row.annotation.status}</Tag> },
+      render: (_, row) => <Tag color={COLORS[row.annotation.status]}>{row.annotation.status}</Tag> },
     { title: "关注程度", key: "priority", width: 118, sorter: true, sortDirections: ["ascend", "descend", "ascend"], sortOrder: sortOrder("priority"),
       render: (_, row) => <Dropdown trigger={["click"]} menu={{ items: FOCUS.map(({ value, label }) => ({ key: String(value), label })),
         onClick: ({ key }) => save(row, { ...row.annotation, tags: (row.annotation.tags || []).join("，"), status: "关注", priority: Number(key) }, false) }}>
