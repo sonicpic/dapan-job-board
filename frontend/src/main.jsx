@@ -1705,7 +1705,11 @@ function FeishuPanel() {
     try { setManifest(await api("/admin/feishu/manifest")); setError(""); }
     catch (e) { setError(e.message); }
   };
-  useEffect(() => { loadManifest(); }, []);
+  useEffect(() => {
+    loadManifest();
+    const timer = setInterval(loadManifest, 15000);
+    return () => clearInterval(timer);
+  }, []);
   useEffect(() => {
     if (!manifest) return;
     let alive = true;

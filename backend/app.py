@@ -196,6 +196,7 @@ def init():
         c.execute("UPDATE sync_logs SET status='error',finished=?,message='服务重新启动，同步将重试' WHERE status='running'", (now(),))
         c.execute("UPDATE company_reviews SET status='queued',error='服务重新启动，分析将重试' WHERE status='running'")
         c.execute("UPDATE event_recordings SET status='queued',error='服务重新启动，录音处理将重试' WHERE status IN ('transcribing','summarizing')")
+        c.execute("UPDATE feishu_sync_runs SET status='error',finished=?,message='服务重新启动，同步未完成；旧数据已保留' WHERE status='running'", (now(),))
         if not c.execute('SELECT 1 FROM users').fetchone():
             password = os.getenv('ADMIN_PASSWORD') or secrets.token_urlsafe(24)
             c.execute('INSERT INTO users VALUES (?,?)', ('admin', hash_pw(password)))
