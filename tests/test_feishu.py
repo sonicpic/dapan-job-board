@@ -53,6 +53,16 @@ def test_public_field_values_are_resolved_for_admin_search():
     assert feishu.readable_fields(cells, fields) == {'名称': '第一条', '分类': '公开'}
 
 
+def test_deadlines_are_normalized_without_model_calls():
+    assert app.normalize_feishu_deadline('2026/10//31')[1:] == ('2026-10-31', '2026-10-31')
+    assert app.normalize_feishu_deadline('2026年4月23日')[1:] == ('2026-04-23', '2026-04-23')
+    assert app.normalize_feishu_deadline('26.3.10')[1:] == ('2026-03-10', '2026-03-10')
+    assert app.normalize_feishu_deadline('6月18日', 2026)[1:] == ('2026-06-18', '2026-06-18')
+    assert app.normalize_feishu_deadline('202610/9')[1:] == ('2026-10-09', '2026-10-09')
+    assert app.normalize_feishu_deadline('尽快投递')[1:] == ('尽快投递', '0000-01-01')
+    assert app.normalize_feishu_deadline('招满即止')[1:] == ('招满即止', '0000-01-02')
+
+
 def test_job_search_filters_sort_and_annotations_are_admin_only(client):
     records = [
         {'record_id': 'rec-a', 'fields': {'公司名称': '星辰科技', '校招岗位': '后端开发', '公司行业': '互联网',
@@ -71,7 +81,7 @@ def test_job_search_filters_sort_and_annotations_are_admin_only(client):
         assert client.get('/api/admin/feishu/annotations').status_code == 401
         sign_in(client)
         assert client.put(path, json={'status': '无效状态'}).status_code == 422
-        assert client.put('/api/admin/feishu/annotations/tbl1/missing', json={'status': '关注'}).status_code == 404
+        assert client.put('/api/admin/feishu/annotations/tbl1/missing', json={'status': '关注', 'priority': 1}).status_code == 404
         saved = client.put(path, json={'status': '关注', 'priority': 3, 'tags': ['北京', '后端', '北京'], 'note': '已联系校友'})
         assert saved.status_code == 200
         assert saved.json()['tags'] == ['北京', '后端']
@@ -104,3 +114,27 @@ def test_search_index_backfills_only_missing_rows(client):
     sign_in(client)
     with patch.object(feishu, 'target_config', return_value={'base_token': 'app-test', 'url': '', 'table_id': '', 'view_id': ''}):
         assert client.get('/api/admin/feishu/records').json()['total'] == 2
+
+
+def test_multiselect_filters_and_true_deadline_sort(client):
+    records = [
+        {'record_id': 'rec-urgent', 'fields': {'公司名称': '甲', '公司行业': '互联网', '工作地点': '北京', '网申截止': '尽快投递'}},
+        {'record_id': 'rec-late', 'fields': {'公司名称': '乙', '公司行业': '金融', '工作地点': '上海', '网申截止': '2026/10//31'}},
+        {'record_id': 'rec-early', 'fields': {'公司名称': '丙', '公司行业': '互联网', '工作地点': '深圳', '网申截止': '2026年4月23日'}},
+    ]
+    config = {'base_token': 'app-test', 'url': '', 'table_id': 'tbl1', 'view_id': 'vew1'}
+    with patch.object(feishu, 'target_config', return_value=config), \
+         patch.object(feishu, 'snapshot', return_value=sample_snapshot(records)):
+        assert app.run_feishu_sync()
+        sign_in(client)
+        result = client.get('/api/admin/feishu/records', params={'sort': 'deadline', 'direction': 'asc'}).json()
+        assert [item['record_id'] for item in result['items']] == ['rec-urgent', 'rec-early', 'rec-late']
+        assert result['items'][-1]['deadline']['label'] == '2026-10-31'
+        result = client.get('/api/admin/feishu/records', params=[('industry', '互联网'), ('industry', '金融'), ('location', '北京'), ('location', '上海')]).json()
+        assert result['total'] == 2
+        assert set(result['facets']['location']) >= {'北京', '上海', '深圳'}
+        path = '/api/admin/feishu/annotations/tbl1/rec-late'
+        assert client.put(path, json={'status': '关注', 'priority': 0}).status_code == 422
+        assert client.put(path, json={'status': '关注', 'priority': 3}).status_code == 200
+        result = client.get('/api/admin/feishu/records', params={'focus': 3}).json()
+        assert [item['record_id'] for item in result['items']] == ['rec-late']

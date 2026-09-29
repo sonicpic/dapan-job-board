@@ -15,7 +15,7 @@ import urllib.request
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -210,6 +210,8 @@ def init():
           education TEXT NOT NULL DEFAULT '',
           exam TEXT NOT NULL DEFAULT '',
           deadline TEXT NOT NULL DEFAULT '',
+          deadline_label TEXT NOT NULL DEFAULT '',
+          deadline_sort TEXT NOT NULL DEFAULT '',
           updated_date TEXT NOT NULL DEFAULT '',
           search_text TEXT NOT NULL DEFAULT '',
           PRIMARY KEY(base_token, table_id, record_id)
@@ -228,6 +230,12 @@ def init():
             c.execute('ALTER TABLE event_recordings ADD COLUMN error_detail TEXT')
         if 'process_log' not in recording_columns:
             c.execute("ALTER TABLE event_recordings ADD COLUMN process_log TEXT NOT NULL DEFAULT '[]'")
+        search_columns = {row['name'] for row in c.execute('PRAGMA table_info(feishu_record_search)')}
+        if 'deadline_label' not in search_columns:
+            c.execute("ALTER TABLE feishu_record_search ADD COLUMN deadline_label TEXT NOT NULL DEFAULT ''")
+        if 'deadline_sort' not in search_columns:
+            c.execute("ALTER TABLE feishu_record_search ADD COLUMN deadline_sort TEXT NOT NULL DEFAULT ''")
+        c.execute('CREATE INDEX IF NOT EXISTS idx_feishu_search_deadline ON feishu_record_search(base_token,deadline_sort)')
         c.execute("UPDATE sync_logs SET status='error',finished=?,message='服务重新启动，同步将重试' WHERE status='running'", (now(),))
         c.execute("UPDATE company_reviews SET status='queued',error='服务重新启动，分析将重试' WHERE status='running'")
         c.execute("UPDATE event_recordings SET status='queued',error='服务重新启动，录音处理将重试' WHERE status IN ('transcribing','summarizing')")
@@ -591,7 +599,92 @@ def recording_worker():
 
 
 FEISHU_INDEX_COLUMNS = ('company', 'position', 'industry', 'company_type', 'recruitment_type',
-                        'target', 'location', 'education', 'exam', 'deadline', 'updated_date', 'search_text')
+                        'target', 'location', 'education', 'exam', 'deadline', 'deadline_label',
+                        'deadline_sort', 'updated_date', 'search_text')
+
+
+def normalize_feishu_deadline(value, reference_year=None):
+    """Normalize messy human-entered deadline text without an LLM.
+
+    The original value remains in ``deadline``. ``deadline_label`` is the
+    readable value and ``deadline_sort`` is an ISO date key. Urgent phrases
+    sort before calendar dates; unknown phrases sort after them.
+    """
+    raw = unicodedata.normalize('NFKC', str(value or '')).strip()
+    raw = re.sub(r'\s+', ' ', raw)
+    if not raw:
+        return '', '未填写', '9999-12-31'
+    if re.search(r'尽快|越早|尽早|及时', raw):
+        return raw, '尽快投递', '0000-01-01'
+    if re.search(r'招满|额满|名额满', raw):
+        return raw, '招满即止', '0000-01-02'
+    year_hint = int(reference_year or dt.datetime.now(TZ).year)
+    match_year = re.search(r'(?<!\d)(20\d{2})(?!\d)', raw)
+    if match_year:
+        year_hint = int(match_year.group(1))
+    elif re.match(r'^\d{2}[./-]', raw):
+        year_hint = 2000 + int(raw[:2])
+    # Convert common Chinese and duplicated-separator forms to a stable shape.
+    text = raw.replace('截止', '').replace('之前', '').replace('前', '')
+    text = re.sub(r'年\s*', '/', text)
+    text = re.sub(r'月\s*', '/', text)
+    text = re.sub(r'日', '', text)
+    text = re.sub(r'[.．。／\\-]+', '/', text)
+    text = re.sub(r'/+', '/', text).strip('/')
+    text = re.sub(r'^(20\d{2})/(\d)(\d{2})$', r'\1/\2/\3', text)
+    compact = re.search(r'(20\d{2})(\d{1,2})/(\d{1,2})', text)
+    match = None if compact else re.search(r'(20\d{2}|\d{2})/(\d{1,2})(?:/(\d{1,2}))?', text)
+    month_only = False
+    if not match:
+        # Values such as 202610/9 contain a four-digit year followed by a
+        # compact month before the separator.
+        if compact:
+            year_hint, month, day = int(compact.group(1)), int(compact.group(2)), int(compact.group(3))
+        else:
+            month_day = re.search(r'(?<!\d)(\d{1,2})/(\d{1,2})', text)
+            if not month_day:
+                month_only = re.search(r'(?<!\d)(\d{1,2})/(?=月?底|月?末|月?初|上旬|中旬|下旬)', text)
+                if not month_only:
+                    return raw, raw, '9999-12-30'
+                month, day = int(month_only.group(1)), 1
+            else:
+                month, day = int(month_day.group(1)), int(month_day.group(2))
+    else:
+        year_hint = int(match.group(1))
+        if year_hint < 100:
+            year_hint += 2000
+        month = int(match.group(2))
+        day = int(match.group(3) or 1)
+        if not match.group(3):
+            month_only = True
+            # Month-only values represent the last known day of that month.
+            day = 31
+            while day > 28:
+                try:
+                    dt.date(year_hint, month, day)
+                    break
+                except ValueError:
+                    day -= 1
+    if re.search(r'月底|月末', raw):
+        day = 31
+        while day > 28:
+            try:
+                dt.date(year_hint, month, day)
+                break
+            except ValueError:
+                day -= 1
+    elif re.search(r'月初|上旬', raw):
+        day = 1
+    elif re.search(r'中旬', raw):
+        day = 15
+    elif re.search(r'下旬', raw):
+        day = 25
+    try:
+        parsed = dt.date(year_hint, month, day)
+    except (ValueError, TypeError):
+        return raw, raw, '9999-12-30'
+    qualifier = ' · 约' if re.search(r'月初|上旬|中旬|下旬|月底|月末', raw) else ' · 仅到月' if month_only else ''
+    return raw, parsed.isoformat() + qualifier, parsed.isoformat()
 
 
 def index_feishu_record(c, base, table_id, record_id, record):
@@ -611,15 +704,22 @@ def index_feishu_record(c, base, table_id, record_id, record):
         'deadline': pick('网申截止', '截止时间', '截止日期'),
         'updated_date': pick('网申更新', '更新时间', '更新日期'),
     }
+    updated_year = re.search(r'(20\d{2})', values['updated_date'])
+    raw_deadline, deadline_label, deadline_sort = normalize_feishu_deadline(
+        values['deadline'], updated_year.group(1) if updated_year else None)
+    values['deadline'] = raw_deadline
+    values['deadline_label'] = deadline_label
+    values['deadline_sort'] = deadline_sort
     values['search_text'] = unicodedata.normalize('NFKC', ' '.join(str(v) for v in fields.values())).casefold()
     c.execute('''INSERT INTO feishu_record_search
-      (base_token,table_id,record_id,company,position,industry,company_type,recruitment_type,target,location,education,exam,deadline,updated_date,search_text)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      (base_token,table_id,record_id,company,position,industry,company_type,recruitment_type,target,location,education,exam,deadline,deadline_label,deadline_sort,updated_date,search_text)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(base_token,table_id,record_id) DO UPDATE SET
       company=excluded.company,position=excluded.position,industry=excluded.industry,
       company_type=excluded.company_type,recruitment_type=excluded.recruitment_type,
       target=excluded.target,location=excluded.location,education=excluded.education,
-      exam=excluded.exam,deadline=excluded.deadline,updated_date=excluded.updated_date,
+      exam=excluded.exam,deadline=excluded.deadline,deadline_label=excluded.deadline_label,
+      deadline_sort=excluded.deadline_sort,updated_date=excluded.updated_date,
       search_text=excluded.search_text''',
               (base, table_id, record_id, *(values[k] for k in FEISHU_INDEX_COLUMNS)))
 
@@ -629,7 +729,7 @@ def ensure_feishu_search_index():
     with conn() as c:
         rows = c.execute('''SELECT r.base_token,r.table_id,r.record_id,r.payload FROM feishu_records r
             LEFT JOIN feishu_record_search s ON s.base_token=r.base_token AND s.table_id=r.table_id AND s.record_id=r.record_id
-            WHERE r.source_missing=0 AND s.record_id IS NULL''').fetchall()
+            WHERE r.source_missing=0 AND (s.record_id IS NULL OR s.deadline_sort IS NULL OR s.deadline_sort='')''').fetchall()
         for row in rows:
             index_feishu_record(c, row['base_token'], row['table_id'], row['record_id'], json.loads(row['payload']))
 
@@ -1040,9 +1140,12 @@ def feishu_manifest(request: Request):
 
 @app.get('/api/admin/feishu/records')
 def feishu_records(request: Request, table_id: str = '', q: str = '', limit: int = 100, offset: int = 0,
-                   status: str = '', priority: int = -1, industry: str = '', company_type: str = '',
-                   recruitment_type: str = '', location: str = '', education: str = '', exam: str = '',
-                   tag: str = '', sort: str = 'updated_date', direction: str = 'desc', group_by: str = ''):
+                   status: list[str] = Query(default=[]), priority: int = -1,
+                   industry: list[str] = Query(default=[]), company_type: list[str] = Query(default=[]),
+                   recruitment_type: list[str] = Query(default=[]), location: list[str] = Query(default=[]),
+                   education: list[str] = Query(default=[]), exam: list[str] = Query(default=[]),
+                   tag: list[str] = Query(default=[]), sort: str = 'updated_date', direction: str = 'desc',
+                   group_by: str = '', focus: list[int] = Query(default=[])):
     username = admin(request)
     ensure_feishu_search_index()
     limit = max(1, min(limit, 500)); offset = max(0, offset)
@@ -1050,7 +1153,7 @@ def feishu_records(request: Request, table_id: str = '', q: str = '', limit: int
     allowed_filters = {'industry': industry, 'company_type': company_type, 'recruitment_type': recruitment_type,
                        'location': location, 'education': education, 'exam': exam}
     sort_columns = {'company': 's.company COLLATE NOCASE', 'position': 's.position COLLATE NOCASE',
-                    'industry': 's.industry COLLATE NOCASE', 'deadline': 's.deadline COLLATE NOCASE',
+                    'industry': 's.industry COLLATE NOCASE', 'deadline': 's.deadline_sort COLLATE NOCASE',
                     'updated_date': 's.updated_date COLLATE NOCASE', 'priority': 'COALESCE(a.priority,0)',
                     'status': "COALESCE(a.status,'待筛选') COLLATE NOCASE"}
     sort_sql = sort_columns.get(sort, sort_columns['updated_date'])
@@ -1058,7 +1161,7 @@ def feishu_records(request: Request, table_id: str = '', q: str = '', limit: int
     args = [username, base]
     sql = '''SELECT r.table_id,r.record_id,r.payload,r.first_seen,r.last_seen,
                     s.company,s.position,s.industry,s.company_type,s.recruitment_type,s.target,s.location,
-                    s.education,s.exam,s.deadline,s.updated_date,
+                    s.education,s.exam,s.deadline,s.deadline_label,s.deadline_sort,s.updated_date,
                     COALESCE(a.status,'待筛选') AS annotation_status,COALESCE(a.priority,0) AS annotation_priority,
                     COALESCE(a.tags,'[]') AS annotation_tags,COALESCE(a.note,'') AS annotation_note,a.updated_at AS annotation_updated
              FROM feishu_records r JOIN feishu_record_search s
@@ -1071,16 +1174,27 @@ def feishu_records(request: Request, table_id: str = '', q: str = '', limit: int
     if q:
         sql += " AND s.search_text LIKE ? ESCAPE '\\'"
         args.append('%' + unicodedata.normalize('NFKC', q[:100]).casefold().replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_') + '%')
-    for column, value in allowed_filters.items():
-        if value:
-            sql += f" AND s.{column} LIKE ? ESCAPE '\\'"
-            args.append('%' + value[:100].replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_') + '%')
-    if status:
-        sql += " AND COALESCE(a.status,'待筛选')=?"; args.append(status[:40])
+    facet_where = sql[sql.index(' FROM feishu_records r'):]
+    facet_args = list(args)
+    for column, values in allowed_filters.items():
+        choices = [str(value)[:100] for value in values if value][:20]
+        if choices:
+            sql += ' AND (' + ' OR '.join(f"s.{column} LIKE ? ESCAPE '\\'" for _ in choices) + ')'
+            args.extend('%' + value.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_') + '%' for value in choices)
+    statuses = [value[:40] for value in status if value][:len(FEISHU_STATUSES)]
+    if statuses:
+        sql += " AND COALESCE(a.status,'待筛选') IN (" + ','.join('?' for _ in statuses) + ')'
+        args.extend(statuses)
+    focus_levels = [value for value in focus if value in (1, 2, 3)]
+    if focus_levels:
+        sql += " AND COALESCE(a.status,'待筛选')='关注' AND COALESCE(a.priority,0) IN (" + ','.join('?' for _ in focus_levels) + ')'
+        args.extend(focus_levels)
     if priority >= 0:
         sql += ' AND COALESCE(a.priority,0)=?'; args.append(min(priority, 3))
-    if tag:
-        sql += " AND EXISTS(SELECT 1 FROM json_each(COALESCE(a.tags,'[]')) WHERE value=?)"; args.append(tag[:40])
+    tags = [value[:40] for value in tag if value][:20]
+    if tags:
+        sql += " AND EXISTS(SELECT 1 FROM json_each(COALESCE(a.tags,'[]')) WHERE value IN (" + ','.join('?' for _ in tags) + '))'
+        args.extend(tags)
     where_part = sql[sql.index(' FROM feishu_records r'):]
     group_columns = {'industry': 's.industry', 'company_type': 's.company_type',
                      'recruitment_type': 's.recruitment_type', 'location': 's.location',
@@ -1093,7 +1207,7 @@ def feishu_records(request: Request, table_id: str = '', q: str = '', limit: int
         rows = [dict(row) for row in c.execute(sql + order_sql, args + [limit, offset]).fetchall()]
         facet_rows = [dict(row) for row in c.execute('''SELECT COALESCE(a.status,'待筛选') AS annotation_status,
             s.industry,s.company_type,s.recruitment_type,s.location,s.education,s.exam,
-            COALESCE(a.tags,'[]') AS annotation_tags''' + where_part, args).fetchall()]
+            COALESCE(a.priority,0) AS annotation_priority,COALESCE(a.tags,'[]') AS annotation_tags''' + facet_where, facet_args).fetchall()]
     facets = {}
     for key in ('annotation_status', 'industry', 'company_type', 'recruitment_type', 'location', 'education', 'exam'):
         facets[key] = {}
@@ -1109,6 +1223,8 @@ def feishu_records(request: Request, table_id: str = '', q: str = '', limit: int
         for tag_value in set(tags):
             facets['tags'][tag_value] = facets['tags'].get(tag_value, 0) + 1
     facets['tags'] = dict(sorted(facets['tags'].items(), key=lambda pair: -pair[1])[:80])
+    facets['focus'] = {str(level): sum(row['annotation_status'] == '关注' and row['annotation_priority'] == level for row in facet_rows)
+                       for level in (1, 2, 3)}
     items = []
     for row in rows:
         try: payload = json.loads(row['payload'])
@@ -1120,6 +1236,7 @@ def feishu_records(request: Request, table_id: str = '', q: str = '', limit: int
                       'first_seen': row['first_seen'], 'last_seen': row['last_seen'],
                       'annotation': {'status': row['annotation_status'], 'priority': row['annotation_priority'],
                                      'tags': tags, 'note': row['annotation_note'], 'updated_at': row['annotation_updated']},
+                      'deadline': {'raw': row['deadline'], 'label': row['deadline_label'], 'sort': row['deadline_sort']},
                       'group_value': row.get('annotation_status' if group_by == 'annotation_status' else group_by, '') if group_by else ''})
     return {'items': items, 'total': total, 'limit': limit, 'offset': offset, 'facets': facets,
             'sort': sort, 'direction': direction_sql.lower(), 'group_by': group_by, 'status': feishu_status_payload()}
@@ -1154,6 +1271,9 @@ def update_feishu_annotation(table_id: str, record_id: str, body: FeishuAnnotati
     username = admin(request); base = feishu.target_config()['base_token']
     if body.status.strip() not in FEISHU_STATUSES:
         raise HTTPException(422, '无效的跟进状态')
+    if body.status.strip() == '关注' and body.priority == 0:
+        raise HTTPException(422, '请为关注设置一个档位')
+    effective_priority = body.priority if body.status.strip() == '关注' else 0
     tags = list(dict.fromkeys(str(tag).strip()[:40] for tag in body.tags if str(tag).strip()))[:20]
     with conn() as c:
         if not c.execute('SELECT 1 FROM feishu_records WHERE base_token=? AND table_id=? AND record_id=? AND source_missing=0', (base, table_id, record_id)).fetchone():
@@ -1161,8 +1281,8 @@ def update_feishu_annotation(table_id: str, record_id: str, body: FeishuAnnotati
         c.execute('''INSERT INTO feishu_annotations(username,base_token,table_id,record_id,status,priority,tags,note,updated_at)
                      VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(username,base_token,table_id,record_id) DO UPDATE SET
                      status=excluded.status,priority=excluded.priority,tags=excluded.tags,note=excluded.note,updated_at=excluded.updated_at''',
-                  (username, base, table_id, record_id, body.status.strip(), body.priority, json.dumps(tags, ensure_ascii=False), body.note, now()))
-    return {'ok': True, 'status': body.status.strip(), 'priority': body.priority, 'tags': tags, 'note': body.note}
+                  (username, base, table_id, record_id, body.status.strip(), effective_priority, json.dumps(tags, ensure_ascii=False), body.note, now()))
+    return {'ok': True, 'status': body.status.strip(), 'priority': effective_priority, 'tags': tags, 'note': body.note}
 
 
 class ReviewRequest(BaseModel):

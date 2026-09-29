@@ -817,100 +817,70 @@ input {
 .admin-main {
   min-height: 500px;
 }
-.feishu-page {
-  max-width: 1480px;
-  padding-top: 28px;
-}
-.feishu-workspace {
-  --feishu-ink: #183a35;
-  --feishu-muted: #71837b;
-}
-.feishu-hero {
-  min-height: 210px;
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 24px;
-  padding: 34px 38px;
-  margin-bottom: 18px;
-  color: #f4fbf5;
-  border-radius: 22px;
-  overflow: hidden;
-  background: radial-gradient(circle at 87% 18%, #4b9b83 0, transparent 30%), linear-gradient(120deg, #173f39 0%, #1b6352 56%, #317865 100%);
-  box-shadow: 0 16px 34px rgba(24, 71, 59, .16);
-}
-.feishu-hero h1.ant-typography { margin: 12px 0 8px; color: #fff; font-size: 35px; letter-spacing: -.8px; }
-.feishu-hero p.ant-typography { max-width: 680px; margin-bottom: 20px; color: rgba(244, 251, 245, .76); font-size: 14px; }
-.feishu-eyebrow { display: flex; align-items: center; gap: 7px; color: #bee5cf; font-size: 12px; letter-spacing: 1.4px; }
-.feishu-hero-meta { color: rgba(244, 251, 245, .76); font-size: 12px; }
-.feishu-hero-meta .anticon { margin-right: 5px; color: #b8e2c8; }
-.feishu-hero-action { display: flex; gap: 10px; align-self: flex-start; }
-.feishu-hero-action .ant-btn { color: #e6f6eb; border-color: rgba(255,255,255,.3); background: rgba(255,255,255,.1); }
-.feishu-hero-action .ant-btn-primary, .feishu-hero-action .ant-btn:hover { color: #1b5a49; background: #fff; border-color: #fff; }
-.feishu-workspace > .ant-alert { margin-bottom: 14px; border-radius: 12px; }
-.feishu-summary { margin-bottom: 18px; }
-.feishu-summary .ant-card { height: 118px; border: 1px solid #e1eae3; border-radius: 15px; box-shadow: none; }
-.feishu-summary .ant-card-body { display: flex; flex-direction: column; padding: 18px 20px; }
-.feishu-summary span { color: var(--feishu-muted); font-size: 12px; }
-.feishu-summary strong { margin-top: 7px; color: var(--feishu-ink); font-size: 29px; line-height: 1.1; font-weight: 600; }
-.feishu-summary small { margin-top: 5px; color: #a0aaa3; font-size: 11px; }
-.feishu-filter-card, .feishu-results-card { border-radius: 16px; box-shadow: 0 5px 18px rgba(28, 65, 46, .04); }
-.feishu-filter-card { margin-bottom: 18px; }
-.feishu-search-row { display: flex; gap: 12px; }
-.feishu-search-row .ant-input-affix-wrapper { flex: 1; border-radius: 10px; background: #fbfcfa; }
-.feishu-search-row > .ant-btn { height: 42px; }
-.feishu-status-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 18px; padding-top: 16px; border-top: 1px solid #edf0ed; }
-.feishu-status-row button { display: inline-flex; align-items: center; gap: 6px; padding: 5px 9px; color: #7a887f; border: 1px solid transparent; border-radius: 8px; background: transparent; cursor: pointer; transition: all .18s ease; }
-.feishu-status-row button:hover { color: #1b6956; background: #f0f7f1; }
-.feishu-status-row button.active { color: #176456; border-color: #b9dec7; background: #eef8f1; }
-.feishu-status-row button b { color: #98a39b; font-size: 11px; font-weight: 500; }
-.feishu-status-row .ant-tag { margin: 0; }
-.feishu-extra-filters { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; padding-top: 14px; border-top: 1px dashed #e5ebe5; }
-.feishu-extra-filters .ant-select { width: 145px; }
-.feishu-results-card { overflow: hidden; }
-.feishu-results-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 17px; }
-.feishu-results-toolbar h4.ant-typography { margin: 0 0 5px; color: var(--feishu-ink); }
-.feishu-results-toolbar .ant-typography { font-size: 12px; }
-.feishu-table .ant-table { font-size: 13px; }
-.feishu-table .ant-table-container { border: 1px solid #edf1ed; border-radius: 11px; overflow: hidden; }
-.feishu-table .ant-table-thead > tr > th { color: #62766a; background: #f5f8f4; font-size: 12px; font-weight: 600; }
-.feishu-table .ant-table-tbody > tr > td { vertical-align: middle; border-color: #f0f2ef; }
-.feishu-table .ant-table-tbody > tr:hover > td { background: #f7fbf7 !important; }
-.feishu-company-cell p.ant-typography { margin: 2px 0 0; color: #839087; font-size: 12px; }
-.feishu-company-link.ant-btn { height: auto; padding: 0; color: #1c6856; font-weight: 600; text-align: left; white-space: normal; }
-.feishu-company-link.ant-btn:hover { color: #0c4538; }
-.feishu-status-tag { min-width: 58px; margin: 0; text-align: center; }
-.feishu-star-button.ant-btn { display: inline-flex; align-items: center; gap: 5px; padding: 0; color: #9aa49d; font-size: 12px; }
-.feishu-star-button.ant-btn .anticon { color: #dfa63e; font-size: 16px; }
-.feishu-star-button.ant-btn:hover { color: #8c6b20; }
-.feishu-group-tag { margin: 0; max-width: 112px; overflow: hidden; text-overflow: ellipsis; }
-.feishu-muted-icon { color: #9aac9f; }
-.feishu-detail-drawer .ant-drawer-header { border-bottom: 0; }
-.feishu-drawer-heading > .ant-typography { display: block; }
-.feishu-drawer-heading h3.ant-typography { margin: 5px 0 0; color: var(--feishu-ink); }
-.feishu-detail-tags { margin-bottom: 20px; }
-.feishu-position-detail { padding: 12px 14px; white-space: pre-wrap; color: #52665a; background: #f7faf6; border-radius: 8px; }
+.feishu-page { max-width: 1480px; padding-top: 25px; }
+.feishu-workspace > .ant-alert { margin-bottom: 14px; }
+.feishu-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; margin-bottom: 28px; padding-bottom: 18px; border-bottom: 1px solid #e5ebe5; }
+.feishu-heading h2.ant-typography { margin: 0 0 7px; color: #183a35; letter-spacing: -.5px; }
+.feishu-count { display: inline-block; margin-left: 8px; padding: 4px 9px; color: #327560; background: #eaf5ed; border-radius: 4px; font-size: 13px; vertical-align: middle; }
+.feishu-heading > .ant-space .ant-btn { color: #577167; }
+.feishu-filter-panel { margin-bottom: 25px; padding: 17px 0 11px; border-top: 1px solid #e5ebe5; border-bottom: 1px solid #e5ebe5; }
+.feishu-filter-panel > .ant-input-affix-wrapper { width: min(550px, 100%); margin-bottom: 9px; border: 0; border-bottom: 1px solid #dfe7df; border-radius: 0; box-shadow: none !important; background: transparent; }
+.feishu-facet-row { display: flex; gap: 18px; min-height: 43px; padding: 9px 0; border-top: 1px solid #f0f3ef; }
+.feishu-facet-name { width: 72px; flex: 0 0 72px; padding-top: 5px; color: #61736a; font-size: 12px; font-weight: 600; }
+.feishu-facet-options { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 5px; }
+.feishu-facet-options .ant-btn { height: 27px; padding: 2px 8px; color: #74847b; border-radius: 4px; font-size: 12px; }
+.feishu-facet-options .ant-btn:hover, .feishu-facet-options .ant-btn.selected { color: #176456; background: #eaf5ed; }
+.feishu-facet-options .ant-btn small { margin-left: 5px; color: #a3aea6; font-size: 10px; }
+.feishu-facet-options .ant-btn.selected small { color: #4e9676; }
+.feishu-expand { color: #39816b !important; }
+.feishu-dot { width: 5px; height: 5px; margin-right: 4px; border-radius: 50%; background: #8d9b91; }
+.feishu-dot-status { background: #d19a35; }
+.feishu-dot-focus { background: #df9c27; }
+.feishu-filter-footer { display: flex; align-items: center; gap: 9px; padding-top: 7px; color: #829087; font-size: 12px; }
+.feishu-list-heading { display: flex; align-items: center; justify-content: space-between; gap: 15px; margin-bottom: 10px; }
+.feishu-list-heading strong { color: #24463d; font-size: 17px; font-weight: 650; }
+.feishu-list-heading > div:first-child span { margin-left: 10px; color: #97a49b; font-size: 12px; }
+.feishu-group-switch { display: flex; align-items: center; gap: 3px; color: #839087; font-size: 12px; }
+.feishu-group-switch .ant-btn { height: 28px; padding: 2px 8px; color: #7d8b83; font-size: 12px; }
+.feishu-group-switch .ant-btn.active { color: #176456; background: #eaf5ed; }
+.feishu-table .ant-table-container { border-right: 0; border-left: 0; border-radius: 0; }
+.feishu-table .ant-table-thead > tr > th { padding: 11px 10px; background: #f5f8f4; }
+.feishu-table .ant-table-column-sorters { justify-content: flex-start; }
+.feishu-table .ant-table-tbody > tr > td { height: 66px; padding: 10px; }
+.feishu-table .ant-table-tbody > tr > td:first-child { border-left: 2px solid transparent; }
+.feishu-table .ant-table-tbody > tr:hover > td:first-child { border-left-color: #4a9a79; }
+.feishu-company-cell > .ant-btn { display: block; max-width: 100%; height: 23px; overflow: hidden; padding: 0; color: #176456; font-weight: 650; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.feishu-two-line { display: -webkit-box; height: 34px; overflow: hidden; color: #84928a; font-size: 12px; line-height: 17px; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.feishu-one-line { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.feishu-small-tags { display: flex; gap: 3px; max-width: 100%; overflow: hidden; }
+.feishu-clipped-tag { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.feishu-focus-action.ant-btn { display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 2px 5px; color: #88958c; font-size: 12px; }
+.feishu-focus-action .anticon { color: #dd9a27; }
+.feishu-focus-action:hover { color: #90691f; background: #fff7df; }
+.feishu-detail-drawer .ant-drawer-header { border-bottom: 1px solid #edf1ed; }
+.feishu-detail-tags { margin: 4px 0 20px; }
+.feishu-position-detail { max-height: 170px; overflow: auto; padding: 11px 13px; white-space: pre-wrap; color: #52665a; background: #f7faf6; border-left: 3px solid #b6d8be; }
 .feishu-apply-links { margin-bottom: 24px; }
-.feishu-follow-card { margin: 16px 0 26px; background: #fbfcfa; border-color: #e5ece5; }
-.feishu-follow-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 16px; }
-.feishu-follow-fields > div { display: flex; flex-direction: column; gap: 6px; }
-.feishu-follow-fields > .wide { grid-column: 1 / -1; }
-.feishu-follow-fields label { color: #74847a; font-size: 12px; }
+.feishu-follow-panel { margin: 17px 0 26px; padding: 16px 18px; border-top: 2px solid #dcebe0; border-bottom: 1px solid #e5ece5; background: #fbfcfa; }
+.feishu-follow-panel h5.ant-typography { margin: 0 0 14px; color: #24463d; }
+.feishu-follow-field { display: flex; gap: 14px; align-items: flex-start; margin-bottom: 13px; }
+.feishu-follow-field > label { width: 64px; flex: 0 0 64px; padding-top: 6px; color: #74847a; font-size: 12px; }
+.feishu-follow-options { display: flex; flex-wrap: wrap; gap: 4px; }
+.feishu-follow-options .ant-btn { height: 28px; padding: 2px 9px; color: #78877e; border-radius: 4px; }
+.feishu-follow-options .ant-btn.selected { color: #176456; background: #e7f4eb; }
+.feishu-follow-field > .ant-input, .feishu-follow-field > .ant-input-affix-wrapper, .feishu-follow-field > textarea { flex: 1; }
 .feishu-raw-heading { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; }
 .feishu-raw-heading h5.ant-typography { margin: 0; }
 .feishu-field-value { display: block; max-height: 160px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 @media (max-width: 760px) {
-  .feishu-page { padding: 20px 14px 42px; }
-  .feishu-hero { display: block; min-height: 0; padding: 26px 23px; border-radius: 17px; }
-  .feishu-hero h1.ant-typography { font-size: 29px; }
-  .feishu-hero-action { margin-top: 22px; }
-  .feishu-hero-action .ant-btn { flex: 1; }
-  .feishu-search-row { display: block; }
-  .feishu-search-row > .ant-btn { width: 100%; margin-top: 10px; }
-  .feishu-results-toolbar { display: block; }
-  .feishu-results-toolbar > .ant-space { margin-top: 13px; }
-  .feishu-follow-fields { grid-template-columns: 1fr; }
-  .feishu-follow-fields > .wide { grid-column: auto; }
+  .feishu-heading { align-items: flex-start; }
+  .feishu-heading > .ant-space { flex-direction: column; align-items: flex-end; }
+  .feishu-facet-row { gap: 8px; }
+  .feishu-facet-name { width: 60px; flex-basis: 60px; }
+  .feishu-list-heading { display: block; }
+  .feishu-group-switch { margin-top: 8px; flex-wrap: wrap; }
+  .feishu-follow-field { display: block; }
+  .feishu-follow-field > label { display: block; margin-bottom: 5px; }
 }
 .ant-pagination {
   margin-top: 12px;
