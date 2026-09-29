@@ -88,6 +88,7 @@ import timezone from "dayjs/plugin/timezone";
 import "dayjs/locale/zh-cn";
 import "antd/dist/reset.css";
 import "./style.css";
+import FeishuWorkspace from "./FeishuWorkspace";
 
 dayjs.extend(utc);
 dayjs.extend(timezone);
@@ -257,6 +258,7 @@ function Header({ active = "jobs", onChange, config, admin = false, showIntervie
               },
               { label: "我的收藏", value: "saved", icon: <StarOutlined /> },
               ...(showInterviews ? [{ label: "面试记录", value: "interviews", icon: <AudioOutlined /> }] : []),
+              ...(showInterviews ? [{ label: "飞书职位库", value: "feishu", icon: <BookOutlined /> }] : []),
             ]}
           />
         )}
@@ -1182,6 +1184,12 @@ function PublicPage() {
       message.error(e.message);
     }
   };
+  if (tab === "feishu" && isAdmin) {
+    return <>
+      <Header active={tab} onChange={changeTab} config={configs} showInterviews />
+      <main className="page feishu-page"><FeishuWorkspace /></main>
+    </>;
+  }
   return (
     <>
       <Header active={tab} onChange={changeTab} config={configs} showInterviews={isAdmin} />
@@ -1687,148 +1695,6 @@ function PublicPage() {
       </Modal>
     </>
   );
-}
-
-function FeishuPanel() {
-  const { message } = AntApp.useApp();
-  const [manifest, setManifest] = useState(null);
-  const [rows, setRows] = useState([]);
-  const [total, setTotal] = useState(0);
-  const [tableId, setTableId] = useState("");
-  const [query, setQuery] = useState("");
-  const [statusFilter, setStatusFilter] = useState("");
-  const [priorityFilter, setPriorityFilter] = useState(-1);
-  const [industry, setIndustry] = useState("");
-  const [companyType, setCompanyType] = useState("");
-  const [recruitmentType, setRecruitmentType] = useState("");
-  const [location, setLocation] = useState("");
-  const [education, setEducation] = useState("");
-  const [exam, setExam] = useState("");
-  const [tag, setTag] = useState("");
-  const [sort, setSort] = useState("updated_date");
-  const [direction, setDirection] = useState("desc");
-  const [groupBy, setGroupBy] = useState("");
-  const [facets, setFacets] = useState({});
-  const [page, setPage] = useState(1);
-  const [selected, setSelected] = useState(null);
-  const [draft, setDraft] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const loadManifest = async () => {
-    try { setManifest(await api("/admin/feishu/manifest")); setError(""); }
-    catch (e) { setError(e.message); }
-  };
-  useEffect(() => {
-    loadManifest();
-    const timer = setInterval(loadManifest, 15000);
-    return () => clearInterval(timer);
-  }, []);
-  useEffect(() => {
-    if (!manifest) return;
-    let alive = true;
-    setLoading(true);
-    const params = new URLSearchParams({ table_id: tableId, q: query, limit: "30", offset: String((page - 1) * 30), status: statusFilter, priority: String(priorityFilter), industry, company_type: companyType, recruitment_type: recruitmentType, location, education, exam, tag, sort, direction, group_by: groupBy });
-    api(`/admin/feishu/records?${params}`).then((result) => {
-      if (alive) { setRows(result.items); setTotal(result.total); setFacets(result.facets || {}); setError(""); }
-    }).catch((e) => { if (alive) setError(e.message); })
-      .finally(() => { if (alive) setLoading(false); });
-    return () => { alive = false; };
-  }, [!!manifest, tableId, query, statusFilter, priorityFilter, industry, companyType, recruitmentType, location, education, exam, tag, sort, direction, groupBy, page, manifest?.status?.last_run?.id]);
-  const sync = async () => {
-    setBusy(true);
-    try {
-      await api("/admin/feishu/sync", "POST");
-      message.success("飞书全量同步已启动");
-      await loadManifest();
-    } catch (e) { message.error(e.message); }
-    finally { setBusy(false); }
-  };
-  const status = manifest?.status;
-  const chosen = manifest?.tables.find((item) => item.table_id === tableId);
-  const setFilter = (setter) => (value) => { setter(value || ""); setPage(1); };
-  const facetOptions = (key) => Object.entries(facets[key] || {}).sort((a, b) => b[1] - a[1]).slice(0, 80).map(([value, count]) => ({ value, label: `${value} (${count})` }));
-  const openRecord = (row) => { setSelected(row); setDraft({ ...row.annotation, tags: (row.annotation?.tags || []).join(", ") }); };
-  const saveAnnotation = async () => {
-    if (!selected || !draft) return;
-    setBusy(true);
-    try {
-      await api(`/admin/feishu/annotations/${selected.table_id}/${selected.record_id}`, "PUT", { ...draft, priority: Number(draft.priority), tags: String(draft.tags || "").split(",").map((x) => x.trim()).filter(Boolean) });
-      message.success("跟进标记已保存"); setSelected(null); setDraft(null);
-      const params = new URLSearchParams({ table_id: tableId, q: query, limit: "30", offset: String((page - 1) * 30), status: statusFilter, priority: String(priorityFilter), industry, company_type: companyType, recruitment_type: recruitmentType, location, education, exam, tag, sort, direction, group_by: groupBy });
-      const result = await api(`/admin/feishu/records?${params}`); setRows(result.items); setTotal(result.total); setFacets(result.facets || {});
-    } catch (e) { message.error(e.message); }
-    finally { setBusy(false); }
-  };
-  const display = (value) => {
-    if (value == null || value === "") return "—";
-    if (typeof value === "string" || typeof value === "number") return String(value);
-    return JSON.stringify(value);
-  };
-  return <>
-    {error && <Alert type="error" message={error} showIcon style={{ marginBottom: 16 }} />}
-    <div className="admin-toolbar">
-      <div><Title level={4}>飞书资料库</Title><Text type="secondary">仅管理员可见 · 保留原始字段与记录</Text></div>
-      <Space>
-        <Button icon={<ReloadOutlined />} onClick={loadManifest}>刷新状态</Button>
-        <Button type="primary" icon={<SyncOutlined />} loading={busy || status?.running} disabled={!status?.configured} onClick={sync}>全量同步</Button>
-      </Space>
-    </div>
-    {status && !status.configured && <Alert type="warning" showIcon message="飞书公开视图尚未配置" description="在服务器 .env 中设置 FEISHU_BASE_URL、FEISHU_TABLE_ID 和 FEISHU_VIEW_ID 后重建容器。" style={{ marginBottom: 16 }} />}
-    {status?.last_run?.status === "error" && <Alert type="error" showIcon message="上次飞书同步失败，旧数据已保留" description={status.last_run.message} style={{ marginBottom: 16 }} />}
-    <Space wrap style={{ marginBottom: 16 }}>
-      <Tag>数据表 {status?.tables ?? 0}</Tag><Tag>当前记录 {status?.records ?? 0}</Tag>
-      <Tag>自动同步每 {status?.interval_minutes ?? 60} 分钟</Tag>
-      {status?.last_run && <Tag color={status.last_run.status === "success" ? "green" : status.last_run.status === "running" ? "blue" : "red"}>最近同步：{status.last_run.status === "success" ? "成功" : status.last_run.status === "running" ? "进行中" : "失败"}</Tag>}
-      {status?.last_run?.finished && <Text type="secondary">{fmt(status.last_run.finished, "YYYY-MM-DD HH:mm")}</Text>}
-    </Space>
-    <Card size="small" style={{ marginBottom: 16 }} title="求职检索工作台">
-      <Space wrap>
-        <Input.Search style={{ width: 300 }} placeholder="搜索公司、岗位、行业、地点或任意字段" allowClear value={query} onChange={(e) => { setQuery(e.target.value); setPage(1); }} />
-        <Select style={{ width: 200 }} value={tableId} onChange={(v) => { setTableId(v); setPage(1); }} options={[{ value: "", label: "全部数据表" }, ...(manifest?.tables || []).map((t) => ({ value: t.table_id, label: `${t.name || t.table_id} · ${t.records}` }))]} />
-        <Select style={{ width: 140 }} placeholder="跟进状态" allowClear value={statusFilter || undefined} onChange={setFilter(setStatusFilter)} options={Object.keys(facets.annotation_status || {}).map((value) => ({ value, label: `${value} (${facets.annotation_status[value]})` }))} />
-        <Select style={{ width: 120 }} placeholder="优先级" allowClear value={priorityFilter < 0 ? undefined : priorityFilter} onChange={(v) => { setPriorityFilter(v == null ? -1 : v); setPage(1); }} options={[0, 1, 2, 3].map((value) => ({ value, label: `${"★".repeat(value) || "无星"}` }))} />
-        <Select style={{ width: 150 }} placeholder="行业" allowClear value={industry || undefined} onChange={setFilter(setIndustry)} options={facetOptions("industry")} />
-        <Select style={{ width: 150 }} placeholder="企业性质" allowClear value={companyType || undefined} onChange={setFilter(setCompanyType)} options={facetOptions("company_type")} />
-        <Select style={{ width: 150 }} placeholder="招聘类型" allowClear value={recruitmentType || undefined} onChange={setFilter(setRecruitmentType)} options={facetOptions("recruitment_type")} />
-        <Select style={{ width: 140 }} placeholder="工作地点" allowClear value={location || undefined} onChange={setFilter(setLocation)} options={facetOptions("location")} />
-        <Select style={{ width: 140 }} placeholder="学历" allowClear value={education || undefined} onChange={setFilter(setEducation)} options={facetOptions("education")} />
-        <Select style={{ width: 140 }} placeholder="笔试" allowClear value={exam || undefined} onChange={setFilter(setExam)} options={facetOptions("exam")} />
-        <Select style={{ width: 140 }} placeholder="标签" allowClear value={tag || undefined} onChange={setFilter(setTag)} options={facetOptions("tags")} />
-      </Space>
-      <Space wrap style={{ marginTop: 12 }}>
-        <Select value={sort} onChange={(v) => { setSort(v); setPage(1); }} options={[{ value: "updated_date", label: "按更新时间" }, { value: "deadline", label: "按截止时间" }, { value: "company", label: "按公司" }, { value: "position", label: "按岗位" }, { value: "priority", label: "按优先级" }, { value: "status", label: "按跟进状态" }]} />
-        <Button icon={direction === "asc" ? <SortAscendingOutlined /> : <SortDescendingOutlined />} onClick={() => { setDirection(direction === "asc" ? "desc" : "asc"); setPage(1); }}>{direction === "asc" ? "升序" : "降序"}</Button>
-        <Select style={{ width: 170 }} value={groupBy || undefined} placeholder="分组显示" allowClear onChange={(v) => { setGroupBy(v || ""); setPage(1); }} options={[{ value: "annotation_status", label: "按跟进状态分组" }, { value: "industry", label: "按行业分组" }, { value: "company_type", label: "按企业性质分组" }, { value: "recruitment_type", label: "按招聘类型分组" }, { value: "location", label: "按工作地点分组" }, { value: "education", label: "按学历分组" }]} />
-      <Button onClick={() => { setQuery(""); setStatusFilter(""); setPriorityFilter(-1); setIndustry(""); setCompanyType(""); setRecruitmentType(""); setLocation(""); setEducation(""); setExam(""); setTag(""); setGroupBy(""); setPage(1); }}>清除筛选</Button>
-      </Space>
-    </Card>
-    {chosen && <Collapse style={{ marginBottom: 16 }} items={[{ key: "fields", label: `字段 ${chosen.fields.length} · 视图 ${chosen.views.length}`, children: <Space wrap>{chosen.fields.map((f) => <Tag key={f.field_id}>{f.name || f.field_id} · {f.type}</Tag>)}</Space> }]} />}
-    <Table rowKey={(r) => `${r.table_id}/${r.record_id}`} loading={loading} dataSource={rows} scroll={{ x: 1180 }} pagination={{ current: page, pageSize: 30, total, showSizeChanger: false, onChange: setPage, showTotal: (n) => `共 ${n} 条` }} columns={[
-      ...(groupBy ? [{ title: "分组", width: 130, fixed: "left", render: (_, row) => row.group_value || "未填写" }] : []),
-      { title: "跟进", width: 130, render: (_, row) => <Space size={4}><Tag color={row.annotation.priority ? "gold" : "default"}>{"★".repeat(row.annotation.priority) || "—"}</Tag><Tag color={row.annotation.status === "已投递" || row.annotation.status === "面试" ? "blue" : row.annotation.status === "Offer" ? "green" : "default"}>{row.annotation.status}</Tag></Space> },
-      { title: "公司", width: 180, render: (_, row) => <Text strong>{row.fields?.["公司名称"] || row.fields?.["企业名称"] || "未填写"}</Text> },
-      { title: "岗位", width: 230, render: (_, row) => display(row.fields?.["校招岗位"] || row.fields?.["招聘岗位"] || row.fields?.["岗位"]) },
-      { title: "行业 / 性质", width: 170, render: (_, row) => `${display(row.fields?.["公司行业"])} / ${display(row.fields?.["企业性质"])}` },
-      { title: "地点", width: 140, render: (_, row) => display(row.fields?.["工作地点"]) },
-      { title: "截止", width: 130, render: (_, row) => display(row.fields?.["网申截止"]) },
-      { title: "操作", fixed: "right", width: 80, render: (_, row) => <Button type="link" onClick={() => openRecord(row)}>标记</Button> },
-    ]} />
-    <Drawer open={!!selected} onClose={() => { setSelected(null); setDraft(null); }} title={selected ? `${selected.fields?.["公司名称"] || "记录"} · 求职跟进` : "求职跟进"} width={760}>
-      {selected && draft && <>
-        <Card size="small" title="跟进标记" style={{ marginBottom: 16 }}>
-          <Space wrap>
-            <Select value={draft.status} onChange={(v) => setDraft({ ...draft, status: v })} options={["待筛选", "关注", "已投递", "笔试", "面试", "Offer", "暂不考虑"].map((value) => ({ value, label: value }))} />
-            <Select value={draft.priority} onChange={(v) => setDraft({ ...draft, priority: v })} options={[0, 1, 2, 3].map((value) => ({ value, label: `${"★".repeat(value) || "无优先级"}` }))} />
-            <Input style={{ width: 240 }} placeholder="标签，用逗号分隔" value={draft.tags} onChange={(e) => setDraft({ ...draft, tags: e.target.value })} />
-          </Space>
-          <Input.TextArea rows={3} style={{ marginTop: 12 }} placeholder="记录投递渠道、联系人、薪资、风险或下一步" value={draft.note} onChange={(e) => setDraft({ ...draft, note: e.target.value })} />
-          <Button type="primary" loading={busy} onClick={saveAnnotation} style={{ marginTop: 12 }}>保存跟进</Button>
-        </Card>
-        <Descriptions column={1} bordered size="small" items={Object.entries(selected.fields || {}).map(([key, value]) => ({ key, label: key, children: <div style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{display(value)}</div> }))} />
-      </>}
-    </Drawer>
-  </>;
 }
 
 function AdminPage() {
@@ -2383,7 +2249,6 @@ function AdminPage() {
               if (key === "settings") settingsForm.setFieldsValue(data.config);
             }}
             items={[
-              { key: "feishu", label: <Space><BookOutlined />飞书资料库</Space>, children: <FeishuPanel /> },
               {
                 key: "records",
                 label: (

@@ -27,6 +27,10 @@ FEISHU_SYNC_INTERVAL_SECONDS=3600
 
 当前搜索为本地字段子串匹配，分组用于列表展示；尚未提供语义检索、Agent、跨记录公司聚合或投递提醒。`feishu_record_search` 和 `feishu_annotations` 与原始镜像分表保存，便于后续扩展。
 
+## 前端交互参考
+
+管理员前台工作台使用项目已有的 Ant Design 组件，不新增自绘表格组件。交互参考了 [Ant Design Table](https://ant.design/components/table-cn) 的固定列、横向滚动、分页和空状态，以及 [Ant Design ProComponents ProTable](https://procomponents.ant.design/components/table) 的检索区、筛选区、结果表格和详情抽屉分层。页面只在管理员会话下向导航注册“飞书职位库”，访客既看不到入口，也不能调用对应接口。
+
 ## 管理员接口
 
 - `GET /api/admin/feishu/status`：配置与运行状态，不返回密钥。
