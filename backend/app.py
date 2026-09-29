@@ -709,6 +709,12 @@ def normalize_feishu_deadline(value, reference_year=None):
     return raw, parsed.isoformat() + qualifier, parsed.isoformat()
 
 
+def feishu_deadline_bounds(days, today=None):
+    """Return an inclusive window of calendar days starting today in app time."""
+    start = today or dt.datetime.now(TZ).date()
+    return start.isoformat(), (start + dt.timedelta(days=days - 1)).isoformat()
+
+
 def index_feishu_record(c, base, table_id, record_id, record):
     fields = record.get('fields') or {}
     def pick(*names):
@@ -1167,7 +1173,8 @@ def feishu_records(request: Request, table_id: str = '', q: str = '', limit: int
                    recruitment_type: list[str] = Query(default=[]), location: list[str] = Query(default=[]),
                    education: list[str] = Query(default=[]), exam: list[str] = Query(default=[]),
                    tag: list[str] = Query(default=[]), sort: str = 'updated_date', direction: str = 'desc',
-                   group_by: str = '', focus: list[int] = Query(default=[])):
+                   group_by: str = '', focus: list[int] = Query(default=[]),
+                   deadline_days: int = Query(default=0, ge=0, le=365)):
     username = admin(request)
     ensure_feishu_search_index()
     limit = max(1, min(limit, 500)); offset = max(0, offset)
@@ -1196,6 +1203,12 @@ def feishu_records(request: Request, table_id: str = '', q: str = '', limit: int
     if q:
         sql += " AND s.search_text LIKE ? ESCAPE '\\'"
         args.append('%' + unicodedata.normalize('NFKC', q[:100]).casefold().replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_') + '%')
+    if deadline_days:
+        start_date, end_date = feishu_deadline_bounds(deadline_days)
+        sql += ' AND s.deadline_sort BETWEEN ? AND ? AND s.deadline_label=s.deadline_sort'
+        args.extend((start_date, end_date))
+        sort, direction_sql, group_by = 'deadline', 'ASC', ''
+        sort_sql = sort_columns['deadline']
     facet_where = sql[sql.index(' FROM feishu_records r'):]
     facet_args = list(args)
     selected_facets = {}

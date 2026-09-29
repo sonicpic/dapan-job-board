@@ -1,3 +1,4 @@
+import datetime as dt
 import json
 from unittest.mock import patch
 
@@ -61,6 +62,32 @@ def test_deadlines_are_normalized_without_model_calls():
     assert app.normalize_feishu_deadline('202610/9')[1:] == ('2026-10-09', '2026-10-09')
     assert app.normalize_feishu_deadline('尽快投递')[1:] == ('尽快投递', '0000-01-01')
     assert app.normalize_feishu_deadline('招满即止')[1:] == ('招满即止', '0000-01-02')
+    assert app.feishu_deadline_bounds(3, dt.date(2026, 10, 29)) == ('2026-10-29', '2026-10-31')
+
+
+def test_upcoming_deadline_window_excludes_past_future_and_undated_records(client):
+    today = dt.datetime.now(app.TZ).date()
+    dated = [(-1, 'past'), (0, 'today'), (1, 'tomorrow'), (2, 'day-three'), (3, 'later')]
+    records = [{'record_id': key, 'fields': {'公司名称': key, '网申截止': (today + dt.timedelta(days=offset)).isoformat()}}
+               for offset, key in dated]
+    records.append({'record_id': 'urgent', 'fields': {'公司名称': 'urgent', '网申截止': '尽快投递'}})
+    records.append({'record_id': 'unknown', 'fields': {'公司名称': 'unknown', '网申截止': '待定'}})
+    config = {'base_token': 'app-test', 'url': '', 'table_id': 'tbl1', 'view_id': 'vew1'}
+    with patch.object(feishu, 'target_config', return_value=config), \
+         patch.object(feishu, 'snapshot', return_value=sample_snapshot(records)):
+        assert app.run_feishu_sync()
+        sign_in(client)
+        response = client.get('/api/admin/feishu/records', params={
+            'deadline_days': 3, 'sort': 'company', 'direction': 'desc', 'group_by': 'industry'})
+        assert response.status_code == 200, response.text
+        result = response.json()
+        assert result['total'] == 3
+        assert [item['record_id'] for item in result['items']] == ['today', 'tomorrow', 'day-three']
+        assert (result['sort'], result['direction'], result['group_by']) == ('deadline', 'asc', '')
+        page = client.get('/api/admin/feishu/records', params={'deadline_days': 3, 'limit': 1, 'offset': 1}).json()
+        assert page['total'] == 3
+        assert [item['record_id'] for item in page['items']] == ['tomorrow']
+        assert client.get('/api/admin/feishu/records?deadline_days=366').status_code == 422
 
 
 def test_job_search_filters_sort_and_annotations_are_admin_only(client):

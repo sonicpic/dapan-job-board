@@ -21,6 +21,8 @@ const GROUPS = [
   ["location", "工作地点"], ["education", "学历"],
 ];
 const DEFAULT_PAGE_SIZE = 30;
+const DEADLINE_WINDOWS = [1, 3, 7, 14, 30];
+const chinaDay = () => new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
 const display = (value) => value == null || value === "" ? "—" : typeof value === "object" ? JSON.stringify(value) : String(value);
 const safeHref = (value) => typeof value === "string" && /^https?:\/\/\S+$/i.test(value.trim()) ? value.trim() : null;
 const labelForFocus = (value) => FOCUS.find((item) => item.value === value)?.label || "关注";
@@ -87,6 +89,8 @@ export default function FeishuWorkspace() {
   const [groupBy, setGroupBy] = useState("");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
+  const [deadlineDays, setDeadlineDays] = useState(0);
+  const [currentDay, setCurrentDay] = useState(chinaDay);
   const [revision, setRevision] = useState(0);
   const [selected, setSelected] = useState(null);
   const [draft, setDraft] = useState(null);
@@ -98,6 +102,14 @@ export default function FeishuWorkspace() {
     const timer = setTimeout(() => { setSearch(query.trim()); setPage(1); }, 300);
     return () => clearTimeout(timer);
   }, [query]);
+  useEffect(() => {
+    if (!deadlineDays) return;
+    const timer = setInterval(() => setCurrentDay((previous) => {
+      const today = chinaDay();
+      return previous === today ? previous : today;
+    }), 60000);
+    return () => clearInterval(timer);
+  }, [deadlineDays]);
   const loadManifest = async () => {
     try { setManifest(await request("/admin/feishu/manifest")); setError(""); }
     catch (reason) { setError(reason.message); }
@@ -111,7 +123,7 @@ export default function FeishuWorkspace() {
     if (!manifest) return;
     let active = true;
     setLoading(true);
-    const params = new URLSearchParams({ q: search, sort, direction, group_by: groupBy, limit: String(pageSize), offset: String((page - 1) * pageSize) });
+    const params = new URLSearchParams({ q: search, sort, direction, group_by: groupBy, deadline_days: String(deadlineDays), limit: String(pageSize), offset: String((page - 1) * pageSize) });
     Object.entries(filters).forEach(([key, values]) => (values || []).forEach((value) => params.append(key, String(value))));
     request(`/admin/feishu/records?${params}`).then((result) => {
       if (!active) return;
@@ -119,10 +131,14 @@ export default function FeishuWorkspace() {
     }).catch((reason) => { if (active) setError(reason.message); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [!!manifest, manifest?.status?.last_run?.id, search, sort, direction, groupBy, page, pageSize, filters, revision]);
+  }, [!!manifest, manifest?.status?.last_run?.id, search, sort, direction, groupBy, deadlineDays, currentDay, page, pageSize, filters, revision]);
 
   const setFacet = (key, values) => { setFilters((old) => ({ ...old, [key]: values })); setPage(1); };
-  const reset = () => { setQuery(""); setSearch(""); setFilters({}); setFilterResetKey((value) => value + 1); setPage(1); };
+  const setDeadlineWindow = (days) => {
+    setDeadlineDays(days); setPage(1);
+    if (days) { setCurrentDay(chinaDay()); setSort("deadline"); setDirection("asc"); setGroupBy(""); }
+  };
+  const reset = () => { setQuery(""); setSearch(""); setFilters({}); setDeadlineDays(0); setFilterResetKey((value) => value + 1); setPage(1); };
   const sortOrder = (key) => sort === key ? direction === "asc" ? "ascend" : "descend" : null;
   const open = (row) => {
     setSelected(row);
@@ -158,16 +174,16 @@ export default function FeishuWorkspace() {
   const columns = [
     ...(groupBy ? [{ title: "分组", width: 118, fixed: "left", onCell: groupedCell,
       render: (_, row) => <Tag color="geekblue" className="feishu-clipped-tag">{row.group_value || "未填写"}</Tag> }] : []),
-    { title: "公司 / 岗位", key: "company", width: 280, fixed: "left", sorter: true, sortDirections: ["ascend", "descend", "ascend"], sortOrder: sortOrder("company"),
+    { title: "公司 / 岗位", key: "company", width: 280, fixed: "left", sorter: !deadlineDays, sortDirections: ["ascend", "descend", "ascend"], sortOrder: deadlineDays ? null : sortOrder("company"),
       render: (_, row) => <div className="feishu-company-cell">
         <Button type="link" onClick={() => open(row)}>{row.fields?.["公司名称"] || row.fields?.["企业名称"] || "未填写公司"}</Button>
         <Tooltip title={display(row.fields?.["校招岗位"] || row.fields?.["招聘岗位"] || row.fields?.["岗位"])}>
           <span className="feishu-two-line">{display(row.fields?.["校招岗位"] || row.fields?.["招聘岗位"] || row.fields?.["岗位"])}</span>
         </Tooltip>
       </div> },
-    { title: "跟进", key: "status", width: 118, sorter: true, sortDirections: ["ascend", "descend", "ascend"], sortOrder: sortOrder("status"),
+    { title: "跟进", key: "status", width: 118, sorter: !deadlineDays, sortDirections: ["ascend", "descend", "ascend"], sortOrder: deadlineDays ? null : sortOrder("status"),
       render: (_, row) => <Tag color={COLORS[row.annotation.status]}>{row.annotation.status}</Tag> },
-    { title: "关注程度", key: "priority", width: 118, sorter: true, sortDirections: ["ascend", "descend", "ascend"], sortOrder: sortOrder("priority"),
+    { title: "关注程度", key: "priority", width: 118, sorter: !deadlineDays, sortDirections: ["ascend", "descend", "ascend"], sortOrder: deadlineDays ? null : sortOrder("priority"),
       render: (_, row) => <Dropdown trigger={["click"]} menu={{ items: FOCUS.map(({ value, label }) => ({ key: String(value), label })),
         onClick: ({ key }) => save(row, { ...row.annotation, tags: (row.annotation.tags || []).join("，"), status: "关注", priority: Number(key) }, false) }}>
         <Button type="text" className="feishu-focus-action" aria-label={`设置 ${row.fields?.["公司名称"] || "公司"} 的关注程度`}>
@@ -175,7 +191,7 @@ export default function FeishuWorkspace() {
           {row.annotation.status === "关注" ? labelForFocus(row.annotation.priority) : "加入关注"}
         </Button>
       </Dropdown> },
-    { title: "行业 / 性质", key: "industry", width: 176, sorter: true, sortDirections: ["ascend", "descend", "ascend"], sortOrder: sortOrder("industry"),
+    { title: "行业 / 性质", key: "industry", width: 176, sorter: !deadlineDays, sortDirections: ["ascend", "descend", "ascend"], sortOrder: deadlineDays ? null : sortOrder("industry"),
       render: (_, row) => <div className="feishu-small-tags">
         {row.fields?.["公司行业"] && <Tag color="cyan" className="feishu-clipped-tag">{row.fields["公司行业"]}</Tag>}
         {row.fields?.["企业性质"] && <Tag color="blue" className="feishu-clipped-tag">{row.fields["企业性质"]}</Tag>}
@@ -184,14 +200,14 @@ export default function FeishuWorkspace() {
       <span className="feishu-two-line"><EnvironmentOutlined /> {display(row.fields?.["工作地点"])}</span></Tooltip> },
     { title: "招聘类型", width: 112, render: (_, row) => row.fields?.["招聘类型"] ? <Tag color="purple" className="feishu-clipped-tag">{row.fields["招聘类型"]}</Tag> : "—" },
     { title: "学历", width: 92, render: (_, row) => <span className="feishu-one-line">{display(row.fields?.["学历"])}</span> },
-    { title: "网申截止", key: "deadline", width: 135, sorter: true, sortDirections: ["ascend", "descend", "ascend"], sortOrder: sortOrder("deadline"), render: (_, row) => {
+    { title: "网申截止", key: "deadline", width: 135, sorter: !deadlineDays, sortDirections: ["ascend", "descend", "ascend"], sortOrder: deadlineDays ? null : sortOrder("deadline"), render: (_, row) => {
       const label = row.deadline?.label || "未填写";
       const special = row.deadline?.sort?.startsWith("0000");
       return <Tooltip title={row.deadline?.raw && row.deadline.raw !== label ? `统一格式：${label} · 原始值：${row.deadline.raw}` : label}>
         {special ? <Tag color="orange">{label}</Tag> : <span className="feishu-one-line">{label}</span>}
       </Tooltip>;
     } },
-    { title: "更新日期", key: "updated_date", width: 136, sorter: true, sortDirections: ["ascend", "descend", "ascend"], sortOrder: sortOrder("updated_date"),
+    { title: "更新日期", key: "updated_date", width: 136, sorter: !deadlineDays, sortDirections: ["ascend", "descend", "ascend"], sortOrder: deadlineDays ? null : sortOrder("updated_date"),
       render: (_, row) => <Text type="secondary">{display(row.fields?.["网申更新"])}</Text> },
     { title: "", key: "detail", width: 54, fixed: "right", render: (_, row) => <Tooltip title="查看详情与跟进">
       <Button type="text" icon={<EyeOutlined />} aria-label={`查看 ${row.fields?.["公司名称"] || "公司"} 详情`} onClick={() => open(row)} /></Tooltip> },
@@ -200,7 +216,7 @@ export default function FeishuWorkspace() {
     if (extra.action !== "sort" || !sorter?.columnKey) return;
     setSort(sorter.columnKey); setDirection(sorter.order === "ascend" ? "asc" : "desc"); setPage(1);
   };
-  const activeCount = Object.values(filters).reduce((sum, values) => sum + (values?.length || 0), 0) + Number(!!query.trim());
+  const activeCount = Object.values(filters).reduce((sum, values) => sum + (values?.length || 0), 0) + Number(!!query.trim()) + Number(!!deadlineDays);
   const last = manifest?.status?.last_run;
 
   return <div className="feishu-workspace">
@@ -224,21 +240,29 @@ export default function FeishuWorkspace() {
       <FacetRow key={`focus-${filterResetKey}`} title="关注程度" values={Object.fromEntries(FOCUS.map(({ value }) => [String(value), facets.focus?.[value] || 0]))}
         labels={Object.fromEntries(FOCUS.map(({ value, label }) => [String(value), label]))}
         selected={filters.focus} onChange={(values) => setFacet("focus", values)} color="focus" limit={20} />
+      <div className="feishu-facet-row">
+        <Tooltip title="从今天起算，包含今天；仅纳入有明确日期的职位"><span className="feishu-facet-name">即将截止</span></Tooltip>
+        <div className="feishu-facet-main"><div className="feishu-facet-options">
+          <Button type="text" className={!deadlineDays ? "selected" : ""} onClick={() => setDeadlineWindow(0)}>不限</Button>
+          {DEADLINE_WINDOWS.map((days) => <Button type="text" key={days} className={deadlineDays === days ? "selected" : ""}
+            onClick={() => setDeadlineWindow(days)}>{days === 1 ? "今天" : `未来 ${days} 天`}</Button>)}
+        </div></div>
+      </div>
       {FACETS.map(([key, label, source]) => <FacetRow key={`${key}-${filterResetKey}`} title={label} values={facets[source]}
         selected={filters[key]} onChange={(values) => setFacet(key, values)} />)}
     </div>
     <div className="feishu-list-heading">
-      <div><strong>职位清单</strong><span>{total.toLocaleString()} 条结果</span></div>
+      <div><strong>职位清单</strong><span>{total.toLocaleString()} 条结果</span>{!!deadlineDays && <Tag color="green" className="feishu-deadline-order">截止日期从近到远</Tag>}</div>
       <div className="feishu-group-switch">
         <span><AppstoreOutlined /> 分组查看</span>
         <div className="feishu-group-scroll"><Segmented value={groupBy} options={GROUPS.map(([value, label]) => ({ value, label }))}
-          onChange={(value) => { setGroupBy(value); setPage(1); }} /></div>
+          disabled={!!deadlineDays} onChange={(value) => { setGroupBy(value); setPage(1); }} /></div>
       </div>
     </div>
     <Table className="feishu-table" rowKey={(row) => `${row.table_id}/${row.record_id}`} dataSource={rows} columns={columns}
       loading={loading} size="middle" tableLayout="fixed" onChange={onTableChange} scroll={{ x: groupBy ? 1470 : 1352 }}
-      locale={{ emptyText: <Empty description="没有找到符合条件的职位" /> }}
-      pagination={{ current: page, pageSize, total, showSizeChanger: true, pageSizeOptions: ["10", "20", "30", "50", "100"],
+      locale={{ emptyText: <Empty description={deadlineDays ? `未来 ${deadlineDays} 天内没有明确日期的截止职位` : "没有找到符合条件的职位"} /> }}
+      pagination={{ current: page, pageSize, total, showSizeChanger: true, showQuickJumper: true, pageSizeOptions: ["10", "20", "30", "50", "100"],
         onChange: (nextPage, nextSize) => { if (nextSize !== pageSize) { setPageSize(nextSize); setPage(1); } else setPage(nextPage); },
         showTotal: (count, range) => `${range[0]}–${range[1]} / ${count.toLocaleString()}` }} />
 
