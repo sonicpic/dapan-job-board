@@ -12,9 +12,10 @@ FEISHU_BASE_URL=https://wcn5yiabqbxh.feishu.cn/base/FBysbrfNWa22l7s6a2scDsfEnTf?
 FEISHU_TABLE_ID=tblPA2KMUBFbcATH
 FEISHU_VIEW_ID=vewQBnaGZU
 FEISHU_PUBLIC_SYNC=1
+FEISHU_SYNC_INTERVAL_SECONDS=3600
 ```
 
-然后在部署目录执行 `docker compose -f compose.yaml -f compose.wsl.yaml up -d --build app`。登录管理后台，打开“飞书资料库”，点“全量同步”。配置齐全后，服务也会在启动时及之后每 15 分钟同步一次。后台会显示每次同步的成功、失败和数量。应用没有权限时，旧数据保留，错误信息显示在管理界面。
+然后在部署目录执行 `docker compose -f compose.yaml -f compose.wsl.yaml up -d --build app`。登录管理后台，打开“飞书资料库”，可手动点“全量同步”。服务以上次同步尝试的完成时间为基准，每 1 小时自动同步一次；重启不会额外触发一次大表读取。后台会显示每次同步的成功、失败和数量。公开分享被关闭时，旧数据保留，错误信息显示在管理界面。
 
 ## 读取范围与保存方式
 

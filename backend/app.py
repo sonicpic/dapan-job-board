@@ -29,6 +29,7 @@ DB = DATA / 'jobs.sqlite3'
 ORIGIN = os.getenv('APP_ORIGIN', 'http://localhost:8000')
 ORIGINS = {ORIGIN, *(x.strip() for x in os.getenv('APP_ORIGINS', '').split(',') if x.strip())}
 INTERVAL = 900
+FEISHU_INTERVAL = max(60, int(os.getenv('FEISHU_SYNC_INTERVAL_SECONDS', '3600')))
 wake = threading.Event()
 stop = threading.Event()
 sync_lock = threading.Lock()
@@ -615,14 +616,31 @@ def run_feishu_sync():
         return False
     finally:
         feishu_lock.release()
+        feishu_wake.set()
 
 
 def feishu_worker():
     # The Feishu source is optional and independent of KDocs.
     while not stop.is_set():
+        delay = FEISHU_INTERVAL
         if feishu.public_config()['configured']:
-            run_feishu_sync()
-        feishu_wake.wait(INTERVAL)
+            with conn() as c:
+                last = c.execute('SELECT started,finished,status FROM feishu_sync_runs ORDER BY id DESC LIMIT 1').fetchone()
+            if not last:
+                delay = 0
+            elif last['status'] == 'running':
+                delay = 30
+            else:
+                stamp = last['finished'] or last['started']
+                delay = max(0, FEISHU_INTERVAL - (time.time() - dt.datetime.fromisoformat(stamp).timestamp()))
+            if delay <= 0:
+                if feishu_lock.locked():
+                    feishu_wake.wait(10)
+                    feishu_wake.clear()
+                else:
+                    run_feishu_sync()
+                continue
+        feishu_wake.wait(delay)
         feishu_wake.clear()
 
 
@@ -897,6 +915,7 @@ def feishu_status_payload():
     return {
         **cfg,
         'running': feishu_lock.locked(),
+        'interval_minutes': FEISHU_INTERVAL // 60,
         'tables': int(counts['tables'] or 0),
         'records': int(counts['records'] or 0),
         'last_run': dict(last) if last else None,

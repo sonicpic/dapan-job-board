@@ -1750,6 +1750,7 @@ function FeishuPanel() {
     {status?.last_run?.status === "error" && <Alert type="error" showIcon message="上次飞书同步失败，旧数据已保留" description={status.last_run.message} style={{ marginBottom: 16 }} />}
     <Space wrap style={{ marginBottom: 16 }}>
       <Tag>数据表 {status?.tables ?? 0}</Tag><Tag>当前记录 {status?.records ?? 0}</Tag>
+      <Tag>自动同步每 {status?.interval_minutes ?? 60} 分钟</Tag>
       {status?.last_run && <Tag color={status.last_run.status === "success" ? "green" : status.last_run.status === "running" ? "blue" : "red"}>最近同步：{status.last_run.status === "success" ? "成功" : status.last_run.status === "running" ? "进行中" : "失败"}</Tag>}
       {status?.last_run?.finished && <Text type="secondary">{fmt(status.last_run.finished, "YYYY-MM-DD HH:mm")}</Text>}
     </Space>
