@@ -166,7 +166,7 @@ export default function FeishuWorkspace() {
     { title: "网申截止", key: "deadline", width: 135, sorter: true, sortDirections: ["ascend", "descend", "ascend"], sortOrder: sortOrder("deadline"), render: (_, row) => {
       const label = row.deadline?.label || "未填写";
       const special = row.deadline?.sort?.startsWith("0000");
-      return <Tooltip title={row.deadline?.raw && row.deadline.raw !== label ? `原始值：${row.deadline.raw}` : label}>
+      return <Tooltip title={row.deadline?.raw && row.deadline.raw !== label ? `统一格式：${label} · 原始值：${row.deadline.raw}` : label}>
         {special ? <Tag color="orange">{label}</Tag> : <span className="feishu-one-line">{label}</span>}
       </Tooltip>;
     } },
