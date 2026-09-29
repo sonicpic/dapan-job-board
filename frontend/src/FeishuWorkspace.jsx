@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
-import { App, Alert, Button, Descriptions, Drawer, Dropdown, Empty, Input, Space, Table, Tag, Tooltip, Typography } from "antd";
+import { App, Alert, Button, Descriptions, Drawer, Dropdown, Empty, Input, Segmented, Space, Table, Tag, Tooltip, Typography } from "antd";
 import {
-  CheckCircleOutlined, ClockCircleOutlined, EnvironmentOutlined, ExportOutlined,
+  AppstoreOutlined, CheckCircleOutlined, ClearOutlined, ClockCircleOutlined, EnvironmentOutlined, ExportOutlined,
   EyeOutlined, ReloadOutlined, SearchOutlined, StarFilled, StarOutlined, SyncOutlined,
 } from "@ant-design/icons";
 import dayjs from "dayjs";
@@ -39,6 +39,7 @@ async function request(path, method = "GET", body) {
 function FacetRow({ title, values, selected, onChange, labels = {}, color = "default", limit = 14 }) {
   const [expanded, setExpanded] = useState(false);
   const [term, setTerm] = useState("");
+  const [finding, setFinding] = useState(false);
   const entries = Object.entries(values || {}).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], "zh-CN"));
   const matching = term.trim() ? entries.filter(([value]) => (labels[value] || value).toLocaleLowerCase().includes(term.trim().toLocaleLowerCase())) : entries;
   const shown = expanded ? matching : matching.slice(0, limit);
@@ -49,10 +50,16 @@ function FacetRow({ title, values, selected, onChange, labels = {}, color = "def
   return <div className="feishu-facet-row">
     <span className="feishu-facet-name">{title}</span>
     <div className="feishu-facet-main">
-      {entries.length > limit && <Input size="small" allowClear prefix={<SearchOutlined />} className="feishu-facet-search"
-        placeholder={`查找${title}`} aria-label={`查找${title}筛选项`} value={term} onChange={(event) => setTerm(event.target.value)} />}
       <div className={`feishu-facet-options${expanded ? " expanded" : ""}`}>
         <Button type="text" className={!selected?.length ? "selected" : ""} onClick={() => onChange([])}>不限</Button>
+        {(entries.length > limit || finding || term) && <div className={`feishu-facet-search-slot${finding || term ? " open" : ""}`}>
+          {finding || term ? <Input size="small" autoFocus allowClear prefix={<SearchOutlined />} className="feishu-facet-search"
+            placeholder={`查找${title}`} aria-label={`查找${title}筛选项`} value={term} onChange={(event) => setTerm(event.target.value)}
+            onBlur={() => { if (!term) setFinding(false); }}
+            onKeyDown={(event) => { if (event.key === "Escape") { setTerm(""); setFinding(false); } }} /> :
+            <Tooltip title={`查找${title}`}><Button type="text" icon={<SearchOutlined />} aria-label={`查找${title}筛选项`}
+              onClick={() => setFinding(true)} /></Tooltip>}
+        </div>}
         {visible.map(([value, count]) => <Button type="text" key={value} className={selected?.includes(value) ? "selected" : ""}
           onClick={() => onChange(selected?.includes(value) ? selected.filter((item) => item !== value) : [...(selected || []), value])}>
           {color !== "default" && <span className={`feishu-dot feishu-dot-${color}`} />}{labels[value] || value}<small>{count}</small>
@@ -72,6 +79,7 @@ export default function FeishuWorkspace() {
   const [total, setTotal] = useState(0);
   const [facets, setFacets] = useState({});
   const [filters, setFilters] = useState({});
+  const [filterResetKey, setFilterResetKey] = useState(0);
   const [query, setQuery] = useState("");
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState("updated_date");
@@ -113,7 +121,7 @@ export default function FeishuWorkspace() {
   }, [!!manifest, manifest?.status?.last_run?.id, search, sort, direction, groupBy, page, filters, revision]);
 
   const setFacet = (key, values) => { setFilters((old) => ({ ...old, [key]: values })); setPage(1); };
-  const reset = () => { setQuery(""); setSearch(""); setFilters({}); setPage(1); };
+  const reset = () => { setQuery(""); setSearch(""); setFilters({}); setFilterResetKey((value) => value + 1); setPage(1); };
   const sortOrder = (key) => sort === key ? direction === "asc" ? "ascend" : "descend" : null;
   const open = (row) => {
     setSelected(row);
@@ -191,7 +199,7 @@ export default function FeishuWorkspace() {
     if (!sorter?.columnKey) return;
     setSort(sorter.columnKey); setDirection(sorter.order === "ascend" ? "asc" : "desc"); setPage(1);
   };
-  const activeCount = Object.values(filters).reduce((sum, values) => sum + (values?.length || 0), 0) + Number(!!search);
+  const activeCount = Object.values(filters).reduce((sum, values) => sum + (values?.length || 0), 0) + Number(!!query.trim());
   const last = manifest?.status?.last_run;
 
   return <div className="feishu-workspace">
@@ -204,21 +212,27 @@ export default function FeishuWorkspace() {
     {error && <Alert type="error" showIcon message={error} action={<Button size="small" onClick={() => { loadManifest(); setRevision((value) => value + 1); }}>重试</Button>} />}
     {last?.status === "error" && <Alert type="warning" showIcon message="上次同步失败，当前仍可使用已保存的数据" description={last.message} />}
     <div className="feishu-filter-panel">
-      <Input size="large" prefix={<SearchOutlined />} placeholder="搜索公司、岗位、技术方向、地点或原始字段" allowClear value={query}
-        onChange={(event) => setQuery(event.target.value)} aria-label="搜索职位" />
-      <FacetRow title="投递进度" values={Object.fromEntries(STATUSES.map((value) => [value, facets.annotation_status?.[value] || 0]))}
+      <div className="feishu-filter-toolbar">
+        <Input size="large" prefix={<SearchOutlined />} placeholder="搜索公司、岗位、技术方向、地点或原始字段" allowClear value={query}
+          onChange={(event) => setQuery(event.target.value)} aria-label="搜索职位" />
+        <Button className="feishu-clear-filters" icon={<ClearOutlined />} onClick={reset}>
+          清除筛选{activeCount ? ` (${activeCount})` : ""}</Button>
+      </div>
+      <FacetRow key={`status-${filterResetKey}`} title="投递进度" values={Object.fromEntries(STATUSES.map((value) => [value, facets.annotation_status?.[value] || 0]))}
         selected={filters.status} onChange={(values) => setFacet("status", values)} color="status" limit={20} />
-      <FacetRow title="关注程度" values={Object.fromEntries(FOCUS.map(({ value }) => [String(value), facets.focus?.[value] || 0]))}
+      <FacetRow key={`focus-${filterResetKey}`} title="关注程度" values={Object.fromEntries(FOCUS.map(({ value }) => [String(value), facets.focus?.[value] || 0]))}
         labels={Object.fromEntries(FOCUS.map(({ value, label }) => [String(value), label]))}
         selected={filters.focus} onChange={(values) => setFacet("focus", values)} color="focus" limit={20} />
-      {FACETS.map(([key, label, source]) => <FacetRow key={key} title={label} values={facets[source]}
+      {FACETS.map(([key, label, source]) => <FacetRow key={`${key}-${filterResetKey}`} title={label} values={facets[source]}
         selected={filters[key]} onChange={(values) => setFacet(key, values)} />)}
-      {activeCount > 0 && <div className="feishu-filter-footer"><span>已选 {activeCount} 项</span><Button type="link" onClick={reset}>清除筛选</Button></div>}
     </div>
     <div className="feishu-list-heading">
       <div><strong>职位清单</strong><span>{total.toLocaleString()} 条结果</span></div>
-      <div className="feishu-group-switch"><span>分组</span>{GROUPS.map(([value, label]) => <Button key={value} type="text" className={groupBy === value ? "active" : ""}
-        onClick={() => { setGroupBy(value); setPage(1); }}>{label}</Button>)}</div>
+      <div className="feishu-group-switch">
+        <span><AppstoreOutlined /> 分组查看</span>
+        <div className="feishu-group-scroll"><Segmented value={groupBy} options={GROUPS.map(([value, label]) => ({ value, label }))}
+          onChange={(value) => { setGroupBy(value); setPage(1); }} /></div>
+      </div>
     </div>
     <Table className="feishu-table" rowKey={(row) => `${row.table_id}/${row.record_id}`} dataSource={rows} columns={columns}
       loading={loading} size="middle" tableLayout="fixed" onChange={onTableChange} scroll={{ x: groupBy ? 1470 : 1352 }}

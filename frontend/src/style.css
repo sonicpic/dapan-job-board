@@ -824,29 +824,43 @@ input {
 .feishu-count { display: inline-block; margin-left: 8px; padding: 4px 9px; color: #327560; background: #eaf5ed; border-radius: 4px; font-size: 13px; vertical-align: middle; }
 .feishu-heading > .ant-space .ant-btn { color: #577167; }
 .feishu-filter-panel { margin-bottom: 25px; padding: 17px 0 11px; border-top: 1px solid #e5ebe5; border-bottom: 1px solid #e5ebe5; }
-.feishu-filter-panel > .ant-input-affix-wrapper { width: min(550px, 100%); margin-bottom: 9px; border: 0; border-bottom: 1px solid #dfe7df; border-radius: 0; box-shadow: none !important; background: transparent; }
+.feishu-filter-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 13px; }
+.feishu-filter-toolbar > .ant-input-affix-wrapper { flex: 1 1 400px; width: min(550px, 100%); max-width: 550px; border-color: #dce8df; border-radius: 6px; background: #f9fbf9; box-shadow: none; }
+.feishu-filter-toolbar > .ant-input-affix-wrapper-focused { border-color: #63a987; box-shadow: 0 0 0 3px rgb(68 151 105 / 10%); }
+.feishu-clear-filters.ant-btn { flex: 0 0 auto; height: 36px; color: #587467; border-color: #dce8df; border-radius: 6px; background: #fff; }
+.feishu-clear-filters.ant-btn:not(:disabled):hover { color: #176456; border-color: #79b296; background: #f3faf5; }
 .feishu-facet-row { display: flex; gap: 18px; min-height: 43px; padding: 9px 0; border-top: 1px solid #f0f3ef; }
 .feishu-facet-name { width: 72px; flex: 0 0 72px; padding-top: 5px; color: #61736a; font-size: 12px; font-weight: 600; }
 .feishu-facet-main { flex: 1; min-width: 0; }
-.feishu-facet-search { width: min(210px, 100%); margin: 0 0 6px; border-radius: 4px; }
 .feishu-facet-options { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 5px; }
 .feishu-facet-options.expanded { max-height: 210px; overflow-y: auto; align-content: flex-start; }
 .feishu-facet-options .ant-btn { height: 27px; padding: 2px 8px; color: #74847b; border-radius: 4px; font-size: 12px; }
 .feishu-facet-options .ant-btn:hover, .feishu-facet-options .ant-btn.selected { color: #176456; background: #eaf5ed; }
 .feishu-facet-options .ant-btn small { margin-left: 5px; color: #a3aea6; font-size: 10px; }
 .feishu-facet-options .ant-btn.selected small { color: #4e9676; }
+.feishu-facet-search-slot { flex: 0 0 28px; width: 28px; height: 27px; overflow: hidden; transition: flex-basis .22s ease, width .22s ease; }
+.feishu-facet-search-slot.open { flex-basis: 176px; width: 176px; }
+.feishu-facet-search-slot .ant-btn { width: 28px; padding: 0; color: #578573; }
+.feishu-facet-search-slot .ant-btn:hover { background: #eaf5ed; }
+.feishu-facet-search-slot .ant-input-affix-wrapper { width: 176px; height: 27px; padding: 0 7px; border-color: #aed2b9; border-radius: 5px; background: #f5faf6; box-shadow: none; }
+.feishu-facet-search-slot .ant-input { font-size: 12px; }
 .feishu-facet-empty { padding: 5px 8px; color: #98a59c; font-size: 12px; }
 .feishu-expand { color: #39816b !important; }
 .feishu-dot { width: 5px; height: 5px; margin-right: 4px; border-radius: 50%; background: #8d9b91; }
 .feishu-dot-status { background: #d19a35; }
 .feishu-dot-focus { background: #df9c27; }
-.feishu-filter-footer { display: flex; align-items: center; gap: 9px; padding-top: 7px; color: #829087; font-size: 12px; }
-.feishu-list-heading { display: flex; align-items: center; justify-content: space-between; gap: 15px; margin-bottom: 10px; }
+.feishu-list-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 18px; margin-bottom: 12px; padding-bottom: 10px; border-bottom: 1px solid #e5ebe5; }
 .feishu-list-heading strong { color: #24463d; font-size: 17px; font-weight: 650; }
 .feishu-list-heading > div:first-child span { margin-left: 10px; color: #97a49b; font-size: 12px; }
-.feishu-group-switch { display: flex; align-items: center; gap: 3px; color: #839087; font-size: 12px; }
-.feishu-group-switch .ant-btn { height: 28px; padding: 2px 8px; color: #7d8b83; font-size: 12px; }
-.feishu-group-switch .ant-btn.active { color: #176456; background: #eaf5ed; }
+.feishu-group-switch { display: flex; align-items: center; gap: 10px; min-width: 0; color: #46705e; font-size: 12px; font-weight: 600; }
+.feishu-group-switch > span { flex: 0 0 auto; white-space: nowrap; }
+.feishu-group-switch > span .anticon { margin-right: 4px; color: #25805f; font-size: 14px; }
+.feishu-group-scroll { min-width: 0; max-width: 100%; overflow-x: auto; padding: 2px; scrollbar-width: thin; }
+.feishu-group-scroll .ant-segmented { padding: 4px; border: 1px solid #dce9df; border-radius: 7px; background: #edf4ef; white-space: nowrap; }
+.feishu-group-scroll .ant-segmented-item { color: #6d8274; transition: color .18s ease; }
+.feishu-group-scroll .ant-segmented-item-label { min-height: 28px; padding: 0 10px; line-height: 28px; }
+.feishu-group-scroll .ant-segmented-item-selected { color: #176456; font-weight: 650; box-shadow: 0 1px 5px rgb(39 85 55 / 12%); }
+.feishu-group-scroll .ant-segmented-thumb { border-radius: 5px; box-shadow: 0 1px 5px rgb(39 85 55 / 12%); }
 .feishu-table .ant-table-container { border-right: 0; border-left: 0; border-radius: 0; }
 .feishu-table .ant-table-thead > tr > th { padding: 11px 10px; background: #f5f8f4; }
 .feishu-table .ant-table-column-sorters { justify-content: flex-start; }
@@ -882,9 +896,19 @@ input {
   .feishu-facet-row { gap: 8px; }
   .feishu-facet-name { width: 60px; flex-basis: 60px; }
   .feishu-list-heading { display: block; }
-  .feishu-group-switch { margin-top: 8px; flex-wrap: wrap; }
+  .feishu-group-switch { margin-top: 11px; }
   .feishu-follow-field { display: block; }
   .feishu-follow-field > label { display: block; margin-bottom: 5px; }
+}
+@media (max-width: 600px) {
+  .feishu-filter-toolbar { flex-wrap: wrap; }
+  .feishu-filter-toolbar > .ant-input-affix-wrapper { flex-basis: 100%; max-width: none; }
+  .feishu-clear-filters.ant-btn { margin-left: auto; }
+  .feishu-group-switch { display: block; }
+  .feishu-group-scroll { margin-top: 6px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .feishu-facet-search-slot, .feishu-group-scroll .ant-segmented-item { transition: none; }
 }
 .ant-pagination {
   margin-top: 12px;
