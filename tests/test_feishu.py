@@ -44,11 +44,10 @@ def test_failed_sync_preserves_last_good_and_source_deletion_is_retained(client)
         assert c.execute('SELECT count(*) FROM feishu_records WHERE source_missing=1').fetchone()[0] == 1
 
 
-def test_feishu_page_token_is_required_when_more_pages():
-    with patch.object(feishu, '_json_request', return_value={'data': {'items': [1], 'has_more': True}}):
-        try:
-            list(feishu._page('/test', token='test-token'))
-        except feishu.FeishuError as exc:
-            assert 'page_token' in str(exc)
-        else:
-            assert False, 'expected missing token error'
+def test_public_field_values_are_resolved_for_admin_search():
+    cells = {'fld1': {'value': [{'text': '第一条', 'type': 'text'}]},
+             'fld2': {'value': ['opt-a']}}
+    fields = [{'field_id': 'fld1', 'name': '名称', 'type': 1},
+              {'field_id': 'fld2', 'name': '分类', 'type': 4,
+               'property': {'options': [{'id': 'opt-a', 'name': '公开'}]}}]
+    assert feishu.readable_fields(cells, fields) == {'名称': '第一条', '分类': '公开'}

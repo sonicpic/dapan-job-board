@@ -913,7 +913,7 @@ def feishu_status(request: Request):
 def feishu_sync(request: Request):
     admin(request)
     if not feishu.public_config()['configured']:
-        raise HTTPException(400, '飞书只读应用尚未配置，请设置 FEISHU_APP_ID、FEISHU_APP_SECRET 和 FEISHU_BASE_TOKEN')
+        raise HTTPException(400, '飞书公开视图尚未配置，请设置 FEISHU_BASE_URL、FEISHU_TABLE_ID 和 FEISHU_VIEW_ID')
     if feishu_lock.locked():
         raise HTTPException(409, '飞书全量同步正在进行中')
     threading.Thread(target=run_feishu_sync, daemon=True).start()

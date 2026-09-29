@@ -1746,7 +1746,7 @@ function FeishuPanel() {
         <Button type="primary" icon={<SyncOutlined />} loading={busy || status?.running} disabled={!status?.configured} onClick={sync}>全量同步</Button>
       </Space>
     </div>
-    {status && !status.configured && <Alert type="warning" showIcon message="飞书只读应用尚未配置" description="在服务器私有 .env 中设置 FEISHU_APP_ID、FEISHU_APP_SECRET、FEISHU_BASE_TOKEN 后重建容器。" style={{ marginBottom: 16 }} />}
+    {status && !status.configured && <Alert type="warning" showIcon message="飞书公开视图尚未配置" description="在服务器 .env 中设置 FEISHU_BASE_URL、FEISHU_TABLE_ID 和 FEISHU_VIEW_ID 后重建容器。" style={{ marginBottom: 16 }} />}
     {status?.last_run?.status === "error" && <Alert type="error" showIcon message="上次飞书同步失败，旧数据已保留" description={status.last_run.message} style={{ marginBottom: 16 }} />}
     <Space wrap style={{ marginBottom: 16 }}>
       <Tag>数据表 {status?.tables ?? 0}</Tag><Tag>当前记录 {status?.records ?? 0}</Tag>
