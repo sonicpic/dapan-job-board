@@ -133,6 +133,9 @@ def test_multiselect_filters_and_true_deadline_sort(client):
         result = client.get('/api/admin/feishu/records', params=[('industry', '互联网'), ('industry', '金融'), ('location', '北京'), ('location', '上海')]).json()
         assert result['total'] == 2
         assert set(result['facets']['location']) >= {'北京', '上海', '深圳'}
+        result = client.get('/api/admin/feishu/records', params={'industry': '互联网'}).json()
+        assert set(result['facets']['location']) == {'北京', '深圳'}
+        assert set(result['facets']['industry']) == {'互联网', '金融'}
         path = '/api/admin/feishu/annotations/tbl1/rec-late'
         assert client.put(path, json={'status': '关注', 'priority': 0}).status_code == 422
         assert client.put(path, json={'status': '关注', 'priority': 3}).status_code == 200

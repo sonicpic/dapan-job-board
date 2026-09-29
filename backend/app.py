@@ -1198,8 +1198,10 @@ def feishu_records(request: Request, table_id: str = '', q: str = '', limit: int
         args.append('%' + unicodedata.normalize('NFKC', q[:100]).casefold().replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_') + '%')
     facet_where = sql[sql.index(' FROM feishu_records r'):]
     facet_args = list(args)
+    selected_facets = {}
     for column, values in allowed_filters.items():
         choices = list(dict.fromkeys(str(value) for value in values if value))
+        selected_facets[column] = set(choices)
         if choices:
             sql += f" AND feishu_facet_any(s.{column},?,'{column}')"
             args.append(json.dumps(choices, ensure_ascii=False))
@@ -1213,10 +1215,10 @@ def feishu_records(request: Request, table_id: str = '', q: str = '', limit: int
         args.extend(focus_levels)
     if priority >= 0:
         sql += ' AND COALESCE(a.priority,0)=?'; args.append(min(priority, 3))
-    tags = list(dict.fromkeys(value for value in tag if value))
-    if tags:
+    tags_filter = set(value for value in tag if value)
+    if tags_filter:
         sql += " AND EXISTS(SELECT 1 FROM json_each(COALESCE(a.tags,'[]')) WHERE value IN (SELECT value FROM json_each(?)))"
-        args.append(json.dumps(tags, ensure_ascii=False))
+        args.append(json.dumps(sorted(tags_filter), ensure_ascii=False))
     where_part = sql[sql.index(' FROM feishu_records r'):]
     group_columns = {'industry': 's.industry', 'company_type': 's.company_type',
                      'recruitment_type': 's.recruitment_type', 'location': 's.location',
@@ -1230,23 +1232,33 @@ def feishu_records(request: Request, table_id: str = '', q: str = '', limit: int
         facet_rows = [dict(row) for row in c.execute('''SELECT COALESCE(a.status,'待筛选') AS annotation_status,
             s.industry,s.company_type,s.recruitment_type,s.location,s.education,s.exam,
             COALESCE(a.priority,0) AS annotation_priority,COALESCE(a.tags,'[]') AS annotation_tags''' + facet_where, facet_args).fetchall()]
-    facets = {}
-    for key in ('annotation_status', 'industry', 'company_type', 'recruitment_type', 'location', 'education', 'exam'):
-        facets[key] = {}
-        for row in facet_rows:
-            values = [row.get(key) or '未填写'] if key == 'annotation_status' else feishu_facet_values(row.get(key), key)
-            for val in set(values):
-                facets[key][val] = facets[key].get(val, 0) + 1
-        facets[key] = dict(sorted(facets[key].items(), key=lambda pair: (-pair[1], pair[0])))
-    facets['tags'] = {}
+    facet_keys = ('annotation_status', *allowed_filters, 'tags', 'focus')
+    counts = {key: {} for key in facet_keys}
     for row in facet_rows:
-        try: tags = json.loads(row['annotation_tags'])
-        except json.JSONDecodeError: tags = []
-        for tag_value in set(tags):
-            facets['tags'][tag_value] = facets['tags'].get(tag_value, 0) + 1
-    facets['tags'] = dict(sorted(facets['tags'].items(), key=lambda pair: (-pair[1], pair[0])))
-    facets['focus'] = {str(level): sum(row['annotation_status'] == '关注' and row['annotation_priority'] == level for row in facet_rows)
-                       for level in (1, 2, 3)}
+        row_status = row['annotation_status']
+        row_priority = row['annotation_priority']
+        try: row_tags_raw = json.loads(row['annotation_tags'])
+        except json.JSONDecodeError: row_tags_raw = []
+        row_tags = {tag_value for tag_value in row_tags_raw if isinstance(tag_value, str)}
+        tokens = {'annotation_status': {row_status}, 'tags': row_tags,
+                  'focus': {str(row_priority)} if row_status == '关注' and row_priority in (1, 2, 3) else set()}
+        tokens.update({key: set(feishu_facet_values(row[key], key)) for key in allowed_filters})
+        matches = {'annotation_status': not statuses or row_status in statuses,
+                   'focus': not focus_levels or (row_status == '关注' and row_priority in focus_levels),
+                   'tags': not tags_filter or bool(row_tags.intersection(tags_filter))}
+        matches.update({key: not selected_facets[key] or bool(tokens[key].intersection(selected_facets[key]))
+                        for key in allowed_filters})
+        if priority >= 0 and row_priority != min(priority, 3):
+            continue
+        failures = {key for key, matched in matches.items() if not matched}
+        for key in facet_keys:
+            if failures and failures != {key}:
+                continue
+            for value in tokens[key]:
+                counts[key][value] = counts[key].get(value, 0) + 1
+    facets = {key: dict(sorted(values.items(), key=lambda pair: (-pair[1], pair[0])))
+              for key, values in counts.items()}
+    facets['focus'] = {str(level): counts['focus'].get(str(level), 0) for level in (1, 2, 3)}
     items = []
     for row in rows:
         try: payload = json.loads(row['payload'])
