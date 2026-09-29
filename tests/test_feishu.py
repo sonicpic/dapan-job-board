@@ -171,3 +171,11 @@ def test_all_facet_options_are_available_and_filter_counts_match(client):
         assert search({'location': '广州'})['total'] == facets['广州'] == 1
         assert search({'location': '杭州'})['total'] == facets['杭州'] == 1
         assert search({'q': '雄安'})['total'] == 2
+        many_locations = [('location', f'城市{index}') for index in range(21)]
+        assert search(many_locations)['total'] == 21
+        for index in range(21):
+            assert client.put(f'/api/admin/feishu/annotations/tbl1/city-{index}', json={
+                'status': '待筛选', 'tags': [f'标签{index}'],
+            }).status_code == 200
+        many_tags = [('tag', f'标签{index}') for index in range(21)]
+        assert search(many_tags)['total'] == 21

@@ -14,6 +14,7 @@ import urllib.error
 import urllib.request
 import uuid
 from contextlib import asynccontextmanager
+from functools import lru_cache
 from pathlib import Path
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse
@@ -65,15 +66,21 @@ def feishu_facet_values(value, field=''):
     return values or ('未填写',)
 
 
-def feishu_facet_contains(value, choice, field):
-    return int(str(choice) in feishu_facet_values(value, field))
+@lru_cache(maxsize=128)
+def feishu_facet_choices(serialized):
+    return frozenset(json.loads(serialized))
+
+
+def feishu_facet_any(value, serialized_choices, field):
+    choices = feishu_facet_choices(serialized_choices)
+    return int(any(part in choices for part in feishu_facet_values(value, field)))
 
 
 def conn():
     c = sqlite3.connect(DB, timeout=20)
     c.row_factory = sqlite3.Row
     c.execute('PRAGMA journal_mode=WAL')
-    c.create_function('feishu_facet_contains', 3, feishu_facet_contains, deterministic=True)
+    c.create_function('feishu_facet_any', 3, feishu_facet_any, deterministic=True)
     return c
 
 
@@ -1192,10 +1199,10 @@ def feishu_records(request: Request, table_id: str = '', q: str = '', limit: int
     facet_where = sql[sql.index(' FROM feishu_records r'):]
     facet_args = list(args)
     for column, values in allowed_filters.items():
-        choices = [str(value)[:100] for value in values if value][:20]
+        choices = list(dict.fromkeys(str(value) for value in values if value))
         if choices:
-            sql += ' AND (' + ' OR '.join(f"feishu_facet_contains(s.{column},?,'{column}')" for _ in choices) + ')'
-            args.extend(choices)
+            sql += f" AND feishu_facet_any(s.{column},?,'{column}')"
+            args.append(json.dumps(choices, ensure_ascii=False))
     statuses = [value[:40] for value in status if value][:len(FEISHU_STATUSES)]
     if statuses:
         sql += " AND COALESCE(a.status,'待筛选') IN (" + ','.join('?' for _ in statuses) + ')'
@@ -1206,10 +1213,10 @@ def feishu_records(request: Request, table_id: str = '', q: str = '', limit: int
         args.extend(focus_levels)
     if priority >= 0:
         sql += ' AND COALESCE(a.priority,0)=?'; args.append(min(priority, 3))
-    tags = [value[:40] for value in tag if value][:20]
+    tags = list(dict.fromkeys(value for value in tag if value))
     if tags:
-        sql += " AND EXISTS(SELECT 1 FROM json_each(COALESCE(a.tags,'[]')) WHERE value IN (" + ','.join('?' for _ in tags) + '))'
-        args.extend(tags)
+        sql += " AND EXISTS(SELECT 1 FROM json_each(COALESCE(a.tags,'[]')) WHERE value IN (SELECT value FROM json_each(?)))"
+        args.append(json.dumps(tags, ensure_ascii=False))
     where_part = sql[sql.index(' FROM feishu_records r'):]
     group_columns = {'industry': 's.industry', 'company_type': 's.company_type',
                      'recruitment_type': 's.recruitment_type', 'location': 's.location',
