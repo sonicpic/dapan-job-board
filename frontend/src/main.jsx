@@ -81,6 +81,7 @@ import {
   SortDescendingOutlined,
   UserOutlined,
   LockOutlined,
+  FileExcelOutlined,
 } from "@ant-design/icons";
 import dayjs from "dayjs";
 import ReactMarkdown from "react-markdown";
@@ -240,6 +241,7 @@ function Header({ active = "jobs", onChange, config, admin = false, role = "gues
   const { message } = AntApp.useApp();
   const [passwordOpen, setPasswordOpen] = useState(false);
   const [passwordBusy, setPasswordBusy] = useState(false);
+  const [exportBusy, setExportBusy] = useState(false);
   const [passwordForm] = Form.useForm();
   const showInterviews = role === "admin";
   const showWorkspace = role !== "guest";
@@ -254,6 +256,28 @@ function Header({ active = "jobs", onChange, config, admin = false, role = "gues
       location.href = "/login";
     } catch (e) { message.error(e.message); }
     finally { setPasswordBusy(false); }
+  };
+  const exportExcel = async () => {
+    setExportBusy(true);
+    try {
+      const response = await fetch("/api/me/export", { credentials: "same-origin" });
+      if (!response.ok) {
+        const result = await response.json().catch(() => ({}));
+        throw new Error(result.detail || "导出失败，请重新登录后重试");
+      }
+      const blob = await response.blob();
+      const filename = response.headers.get("Content-Disposition")?.match(/filename="?([^";]+)"?/i)?.[1] || "job-data.xlsx";
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.append(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      message.success("Excel 已导出");
+    } catch (error) { message.error(error.message); }
+    finally { setExportBusy(false); }
   };
   return (
     <><header className="header">
@@ -284,13 +308,13 @@ function Header({ active = "jobs", onChange, config, admin = false, role = "gues
         )}
         <Space className="header-actions">
           {sourceButton(config?.source_url)}
-          {admin ? <Button type="text" href="/" icon={<ArrowLeftOutlined />} aria-label="返回首页" />
-            : role === "admin" ? <Tooltip title="设置"><Button type="text" href="/admin" icon={<SettingOutlined />} aria-label="设置" /></Tooltip>
-            : role === "user" ? <Dropdown trigger={["click"]} menu={{ items: [
+          {role === "guest" ? (admin ? <Button type="text" href="/" icon={<ArrowLeftOutlined />} aria-label="返回首页" /> : <Button type="text" href="/login" icon={<UserOutlined />} aria-label="登录">登录</Button>)
+            : <Dropdown trigger={["click"]} menu={{ items: [
               { key: "password", icon: <LockOutlined />, label: "修改密码", onClick: () => setPasswordOpen(true) },
+              { key: "export", icon: <FileExcelOutlined />, label: exportBusy ? "导出中…" : "导出 Excel", disabled: exportBusy, onClick: exportExcel },
+              ...(role === "admin" ? [{ key: "settings", icon: <SettingOutlined />, label: "后台设置", onClick: () => { window.location.href = "/admin"; } }] : []),
               { key: "logout", icon: <LogoutOutlined />, label: "退出登录", onClick: async () => { await api("/logout", "POST"); location.href = "/"; } },
-            ] }}><Button type="text" icon={<UserOutlined />} aria-label="个人中心" className="profile-trigger" /></Dropdown>
-            : <Button type="text" href="/login" icon={<UserOutlined />} aria-label="登录">登录</Button>}
+            ] }}><Button type="text" icon={<UserOutlined />} aria-label="个人中心" className="profile-trigger" /></Dropdown>}
         </Space>
       </div>
     </header>
@@ -2282,21 +2306,12 @@ function AdminPage() {
   ];
   return (
     <>
-      <Header admin config={data.config} />
+      <Header admin config={data.config} role="admin" />
       <main className="page admin-page">
         <div className="admin-heading">
           <div>
             <Title level={2}>管理控制台</Title>
           </div>
-          <Space size={12}>
-            <div className="admin-account"><Avatar size={34} icon={<UserOutlined />} /><span>{data.username}</span></div>
-            <Button
-              icon={<LogoutOutlined />}
-              onClick={() => act(() => api("/logout", "POST"), "已退出")}
-            >
-              退出
-            </Button>
-          </Space>
         </div>
         {error && <Alert type="error" message={error} showIcon />}
         {data.last_error && (

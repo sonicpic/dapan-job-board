@@ -1,5 +1,6 @@
 import datetime as dt
 import json
+from io import BytesIO
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -7,6 +8,8 @@ from fastapi.testclient import TestClient
 from test_app import client, sign_in, sync_fixture
 import app
 import feishu
+import personal_export
+from openpyxl import load_workbook
 
 
 def second_client():
@@ -98,6 +101,57 @@ def test_normal_user_can_change_only_own_password(client):
     assert client.get('/api/admin').status_code == 200
 
 
+def test_user_can_export_only_personal_data_as_styled_workbook(client):
+    sync_fixture()
+    sign_in(client)
+    user = second_client()
+    code = invite(client, uses=2)
+    assert register(user, 'alice', code).status_code == 200
+    assert user.post('/api/login', json={'username': 'alice', 'password': 'StrongPass123!'}).status_code == 200
+    assert user.put('/api/me/bookmarks/source-job-1').status_code == 200
+    other = second_client()
+    assert register(other, 'bob', code).status_code == 200
+    assert other.post('/api/login', json={'username': 'bob', 'password': 'StrongPass123!'}).status_code == 200
+    snapshot = {'base_token': 'app-test', 'tables': [{
+        'table': {'table_id': 'tbl1', 'name': '职位'}, 'fields': [], 'views': [],
+        'records': [{'record_id': 'rec1', 'fields': {
+            '公司名称': '导出公司', '校招岗位': '后端工程师', '工作地点': '北京', '网申截止': '尽快投递',
+            '网申公告': 'https://example.com/notice', '投递链接': 'https://example.com/apply',
+        }}],
+    }]}
+    with patch.object(feishu, 'snapshot', return_value=snapshot), patch.object(feishu, 'target_config',
+            return_value={'base_token': 'app-test', 'url': '', 'table_id': 'tbl1', 'view_id': ''}):
+        assert app.run_feishu_sync()
+        assert user.put('/api/workspace/annotations/tbl1/rec1', json={
+            'status': '关注', 'tags': ['内推', '北京'], 'note': '先联系校友'}).status_code == 200
+        assert other.put('/api/workspace/annotations/tbl1/rec1', json={
+            'status': '流程终止', 'note': 'Bob 的私有记录'}).status_code == 200
+    response = user.get('/api/me/export')
+    assert response.status_code == 200
+    assert response.headers['content-type'].startswith('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    book = load_workbook(BytesIO(response.content), read_only=True, data_only=True)
+    assert book.sheetnames == ['投递跟进', '我的收藏']
+    follow = list(book['投递跟进'].values)
+    saved = list(book['我的收藏'].values)
+    assert follow[0][:3] == ('公司', '岗位', '投递流程')
+    assert follow[1][0:5] == ('导出公司', '后端工程师', '关注', '内推、北京', '先联系校友')
+    assert saved[0][0] == '名称'
+    assert saved[1][0] == '测试公司'
+    assert 'Bob 的私有记录' not in str(follow)
+    assert other.get('/api/me/export').status_code == 200
+    admin_book = load_workbook(BytesIO(client.get('/api/me/export').content), read_only=True, data_only=True)
+    assert list(admin_book['投递跟进'].values) == [follow[0]]
+    assert second_client().get('/api/me/export').status_code == 401
+
+
+def test_excel_export_keeps_source_text_literal():
+    content = personal_export.build_workbook([('=HYPERLINK("https://example.com")', '', '关注', '', '', '', '', '', '', '', '', '')], [])
+    book = load_workbook(BytesIO(content))
+    cell = book['投递跟进']['A2']
+    assert cell.value.startswith('=HYPERLINK')
+    assert cell.data_type == 's'
+
+
 def test_legacy_roles_migrate_and_new_accounts_default_to_user(client):
     with app.conn() as c:
         c.execute('DROP TABLE users')
@@ -136,6 +190,7 @@ def test_admin_user_lifecycle_revokes_sessions_and_deletes_private_data(client):
     assert client.put('/api/admin/users/alice/enabled', json={'enabled': False}).status_code == 200
     assert user.get('/api/session').json()['role'] == 'guest'
     assert user.get('/api/workspace/records').status_code == 401
+    assert user.get('/api/me/export').status_code == 401
     assert user.post('/api/login', json={'username': 'alice', 'password': 'StrongPass123!'}).status_code == 401
     assert client.put('/api/admin/users/alice/enabled', json={'enabled': True}).status_code == 200
     assert user.post('/api/login', json={'username': 'alice', 'password': 'StrongPass123!'}).status_code == 200

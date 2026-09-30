@@ -676,7 +676,7 @@ input {
 .admin-heading > .ant-typography {
   font-size: 13px;
 }
-.admin-account, .managed-user-name {
+.managed-user-name {
   display: inline-flex;
   align-items: center;
   gap: 9px;
@@ -684,7 +684,7 @@ input {
   font-size: 13px;
   font-weight: 600;
 }
-.admin-account .ant-avatar, .managed-user-name .ant-avatar {
+.managed-user-name .ant-avatar {
   background: #e5f1e9;
   color: #176456;
   border: 1px solid #d4e5d8;

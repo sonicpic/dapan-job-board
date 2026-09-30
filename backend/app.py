@@ -24,6 +24,7 @@ from source import SOURCE, TZ, fetch_source, safe_link, normalize_date
 import review
 import recording
 import feishu
+import personal_export
 
 DATA = Path(os.getenv('DATA_DIR', '/app/data'))
 DATA.mkdir(parents=True, exist_ok=True)
@@ -1087,6 +1088,60 @@ def delete_admin_bookmark(record_id: str, request: Request):
     with conn() as c:
         c.execute('DELETE FROM admin_bookmarks WHERE username=? AND record_id=?', (username, record_id))
     return {'ok': True}
+
+
+@app.get('/api/me/export')
+def export_personal_data(request: Request):
+    user = current_user(request)
+    username = user['username']
+    with conn() as c:
+        follow_rows = c.execute('''SELECT a.table_id,a.record_id,a.status,a.tags,a.note,a.updated_at,
+              s.company,s.position,s.location,s.deadline_label,r.payload
+            FROM feishu_annotations a
+            LEFT JOIN feishu_records r ON r.base_token=a.base_token AND r.table_id=a.table_id
+              AND r.record_id=a.record_id AND r.source_missing=0 AND ''' + feishu_visible_sql('r') + '''
+            LEFT JOIN feishu_record_search s ON s.base_token=r.base_token AND s.table_id=r.table_id
+              AND s.record_id=r.record_id
+            WHERE a.username=? ORDER BY a.updated_at DESC,a.record_id''', (username,)).fetchall()
+        saved_rows = c.execute('''SELECT record_id,created_at FROM admin_bookmarks
+                                  WHERE username=? ORDER BY created_at DESC,record_id''', (username,)).fetchall()
+
+    def field(fields, *names):
+        value = next((fields[name] for name in names if fields.get(name)), '')
+        return json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list)) else value
+
+    annotations = []
+    for row in follow_rows:
+        payload = json.loads(row['payload']) if row['payload'] else {}
+        fields = payload.get('fields', payload)
+        if not isinstance(fields, dict):
+            fields = {}
+        try:
+            tags = json.loads(row['tags'] or '[]')
+        except (TypeError, json.JSONDecodeError):
+            tags = []
+        annotations.append((row['company'] or field(fields, '公司名称', '企业名称'),
+                            row['position'] or field(fields, '校招岗位', '招聘岗位', '岗位'),
+                            row['status'], '、'.join(str(tag) for tag in tags) if isinstance(tags, list) else '',
+                            row['note'], row['location'] or field(fields, '工作地点'), row['deadline_label'],
+                            field(fields, '网申公告'), field(fields, '投递链接'), row['updated_at'],
+                            row['table_id'], row['record_id']))
+
+    visible = {item['id']: item for item in effective(include_invisible=user['role'] == 'admin',
+               include_archived=user['role'] == 'admin', include_interviews=user['role'] == 'admin')}
+    bookmarks = []
+    for row in saved_rows:
+        item = visible.get(row['record_id'])
+        bookmarks.append((item.get('company', '') if item else '当前不可见或已删除',
+                          {'job': '招聘信息', 'event': '宣讲会', 'interview': '面试记录'}.get(item.get('kind'), '') if item else '',
+                          item.get('positions', '') if item else '', item.get('location', '') if item else '',
+                          (item.get('starts_at') or item.get('date') or item.get('deadline_date') or '') if item else '',
+                          (item.get('apply_url') or item.get('source_url') or '') if item else '',
+                          item.get('notes', '') if item else '', row['created_at'], row['record_id']))
+    content = personal_export.build_workbook(annotations, bookmarks)
+    filename = f'job-data-{dt.datetime.now(TZ):%Y%m%d}.xlsx'
+    return Response(content, media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                    headers={'Content-Disposition': f'attachment; filename="{filename}"'})
 
 
 class Login(BaseModel):
