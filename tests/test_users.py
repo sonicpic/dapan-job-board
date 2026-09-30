@@ -107,6 +107,7 @@ def test_legacy_roles_migrate_and_new_accounts_default_to_user(client):
     with app.conn() as c:
         assert c.execute("SELECT role FROM users WHERE username='legacy'").fetchone()[0] == 'admin'
         assert next(row for row in c.execute('PRAGMA table_info(users)') if row['name'] == 'role')['dflt_value'] == "'user'"
+        assert c.execute("SELECT enabled FROM users WHERE username='legacy'").fetchone()[0] == 1
         c.execute('DROP TABLE users')
         c.execute("CREATE TABLE users(username TEXT PRIMARY KEY,password TEXT NOT NULL,role TEXT NOT NULL DEFAULT 'admin')")
         c.execute('INSERT INTO users VALUES(?,?,?)', ('legacy', app.hash_pw('LegacyPass123!'), 'admin'))
@@ -114,3 +115,62 @@ def test_legacy_roles_migrate_and_new_accounts_default_to_user(client):
     with app.conn() as c:
         assert c.execute("SELECT role FROM users WHERE username='legacy'").fetchone()[0] == 'admin'
         assert next(row for row in c.execute('PRAGMA table_info(users)') if row['name'] == 'role')['dflt_value'] == "'user'"
+        assert c.execute("SELECT enabled FROM users WHERE username='legacy'").fetchone()[0] == 1
+
+
+def test_admin_user_lifecycle_revokes_sessions_and_deletes_private_data(client):
+    sign_in(client)
+    user = second_client()
+    assert register(user, 'alice', invite(client, uses=1)).status_code == 200
+    assert user.post('/api/login', json={'username': 'alice', 'password': 'StrongPass123!'}).status_code == 200
+    with app.conn() as c:
+        c.execute('INSERT INTO admin_bookmarks VALUES(?,?,?)', ('alice', 'sample', app.now()))
+        c.execute('''INSERT INTO feishu_annotations(username,base_token,table_id,record_id,status,priority,tags,note,updated_at)
+                     VALUES(?,?,?,?,?,?,?,?,?)''', ('alice', 'base', 'table', 'record', '关注', 3, '[]', '私有备注', app.now()))
+    assert user.get('/api/admin/users').status_code == 403
+    assert client.put('/api/admin/users/admin/enabled', json={'enabled': False}).status_code == 403
+    assert client.post('/api/admin/users/admin/reset-password').status_code == 403
+    assert client.delete('/api/admin/users/admin').status_code == 403
+    listing = client.get('/api/admin/users').json()['items']
+    assert listing == [{'username': 'alice', 'role': 'user', 'enabled': True, 'bookmarks': 1, 'annotations': 1}]
+    assert client.put('/api/admin/users/alice/enabled', json={'enabled': False}).status_code == 200
+    assert user.get('/api/session').json()['role'] == 'guest'
+    assert user.get('/api/workspace/records').status_code == 401
+    assert user.post('/api/login', json={'username': 'alice', 'password': 'StrongPass123!'}).status_code == 401
+    assert client.put('/api/admin/users/alice/enabled', json={'enabled': True}).status_code == 200
+    assert user.post('/api/login', json={'username': 'alice', 'password': 'StrongPass123!'}).status_code == 200
+    password = client.post('/api/admin/users/alice/reset-password').json()['password']
+    assert app.strong_password(password)
+    assert user.get('/api/session').json()['role'] == 'guest'
+    assert user.get('/api/workspace/records').status_code == 401
+    assert user.post('/api/login', json={'username': 'alice', 'password': 'StrongPass123!'}).status_code == 401
+    assert user.post('/api/login', json={'username': 'alice', 'password': password}).status_code == 200
+    assert client.delete('/api/admin/users/alice').status_code == 200
+    assert user.get('/api/session').json()['role'] == 'guest'
+    assert user.get('/api/workspace/records').status_code == 401
+    assert user.post('/api/login', json={'username': 'alice', 'password': password}).status_code == 401
+    with app.conn() as c:
+        assert c.execute("SELECT count(*) FROM admin_bookmarks WHERE username='alice'").fetchone()[0] == 0
+        assert c.execute("SELECT count(*) FROM feishu_annotations WHERE username='alice'").fetchone()[0] == 0
+
+
+def test_feishu_placeholders_are_excluded_from_all_workspace_counts(client):
+    sign_in(client)
+    snapshot = {'base_token': 'app-test', 'tables': [{
+        'table': {'table_id': app.FEISHU_PLACEHOLDER_TABLE, 'name': '职位'}, 'fields': [], 'views': [],
+        'records': [
+            {'record_id': app.FEISHU_PLACEHOLDER_RECORDS[0], 'fields': {'公司名称': '27届【秋招/春招/实习】汇总表  4'}},
+            {'record_id': app.FEISHU_PLACEHOLDER_RECORDS[1], 'fields': {'网申更新': '2099-01-01 00:00'}},
+            {'record_id': 'real-job', 'fields': {'公司名称': '真实公司', '工作地点': '北京'}},
+        ],
+    }]}
+    with patch.object(feishu, 'snapshot', return_value=snapshot), patch.object(feishu, 'target_config',
+            return_value={'base_token': 'app-test', 'url': '', 'table_id': app.FEISHU_PLACEHOLDER_TABLE, 'view_id': ''}):
+        assert app.run_feishu_sync()
+        page = client.get('/api/workspace/records').json()
+        assert page['total'] == 1
+        assert [item['record_id'] for item in page['items']] == ['real-job']
+        assert client.get('/api/workspace/manifest').json()['status']['records'] == 1
+        assert client.get('/api/workspace/manifest').json()['tables'][0]['records'] == 1
+    with app.conn() as c:
+        assert c.execute('SELECT count(*) FROM feishu_records').fetchone()[0] == 3

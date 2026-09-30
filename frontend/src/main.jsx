@@ -12,8 +12,6 @@ import {
   Input,
   Select,
   Segmented,
-  Row,
-  Col,
   List,
   Pagination,
   Drawer,
@@ -33,7 +31,6 @@ import {
   Modal,
   Popconfirm,
   Result,
-  Statistic,
   Progress,
   Grid,
   Checkbox,
@@ -1776,9 +1773,12 @@ function AuthPage() {
         </> : <Form.Item name="remember" valuePropName="checked"><Checkbox>在此设备保存密码</Checkbox></Form.Item>}
         <Button type="primary" htmlType="submit" block loading={busy} size="large">{mode === "login" ? "登录" : "注册"}</Button>
       </Form>
-      <div className="login-foot"><Button type="link" onClick={() => setMode(mode === "login" ? "register" : "login")}>
-        {mode === "login" ? "没有账号？使用邀请码注册" : "已有账号？返回登录"}
-      </Button><Link href="/">返回首页</Link></div>
+      <div className="login-foot">
+        <Button type="link" onClick={() => setMode(mode === "login" ? "register" : "login")}>
+          {mode === "login" ? "注册" : "登录"}
+        </Button>
+        <Button type="link" href="/">返回首页</Button>
+      </div>
     </Card></div>
   </>;
 }
@@ -1820,6 +1820,50 @@ function InviteManager() {
     <Modal title="邀请码已创建" open={!!code} onCancel={() => setCode("")} onOk={() => setCode("")} okText="完成" cancelButtonProps={{ style: { display: "none" } }}>
       <Paragraph>请立即复制并妥善保存。关闭后无法再次查看完整邀请码。</Paragraph>
       <Input readOnly value={code} addonAfter={<Button type="text" icon={<CopyOutlined />} onClick={async () => { await copyText(code); message.success("已复制"); }}>复制</Button>} />
+    </Modal>
+  </>;
+}
+
+function UserManager() {
+  const { message } = AntApp.useApp();
+  const [items, setItems] = useState([]);
+  const [busy, setBusy] = useState("");
+  const [newPassword, setNewPassword] = useState(null);
+  const refresh = async () => {
+    try { setItems((await api("/admin/users")).items || []); }
+    catch (e) { message.error(e.message); }
+  };
+  useEffect(() => { refresh(); }, []);
+  const change = async (username, action, run) => {
+    setBusy(`${username}:${action}`);
+    try { await run(); await refresh(); message.success("操作已完成"); }
+    catch (e) { message.error(e.message); }
+    finally { setBusy(""); }
+  };
+  return <>
+    <div className="user-manager-heading"><Title level={4}>用户管理</Title><Text type="secondary">普通用户账号</Text></div>
+    <Table rowKey="username" size="middle" dataSource={items} scroll={{ x: 680 }} pagination={{ pageSize: 10 }} columns={[
+      { title: "账号", dataIndex: "username", render: (value) => <span className="managed-user-name"><Avatar size={28} icon={<UserOutlined />} />{value}</span> },
+      { title: "状态", width: 100, render: (_, row) => <Tag color={row.enabled ? "success" : "default"}>{row.enabled ? "已启用" : "已禁用"}</Tag> },
+      { title: "个人数据", width: 170, render: (_, row) => <Text type="secondary">{row.bookmarks} 个收藏 · {row.annotations} 条跟进</Text> },
+      { title: "操作", width: 285, render: (_, row) => <Space size={4} wrap>
+        <Popconfirm title={row.enabled ? `禁用 ${row.username}？` : `启用 ${row.username}？`} description={row.enabled ? "禁用后现有登录立即失效。" : "启用后用户可重新登录。"} onConfirm={() => change(row.username, "enabled", () => api(`/admin/users/${encodeURIComponent(row.username)}/enabled`, "PUT", { enabled: !row.enabled }))}>
+          <Button size="small" loading={busy === `${row.username}:enabled`}>{row.enabled ? "禁用" : "启用"}</Button>
+        </Popconfirm>
+        <Popconfirm title={`重置 ${row.username} 的密码？`} description="现有登录将失效，新密码只显示一次。" onConfirm={() => change(row.username, "reset", async () => {
+          const result = await api(`/admin/users/${encodeURIComponent(row.username)}/reset-password`, "POST");
+          setNewPassword({ username: row.username, value: result.password });
+        })}>
+          <Button size="small" loading={busy === `${row.username}:reset`}>重置密码</Button>
+        </Popconfirm>
+        <Popconfirm title={`删除 ${row.username}？`} description="该账号的收藏和职位跟进数据会永久删除。" okText="删除" okButtonProps={{ danger: true }} onConfirm={() => change(row.username, "delete", () => api(`/admin/users/${encodeURIComponent(row.username)}`, "DELETE"))}>
+          <Button size="small" danger loading={busy === `${row.username}:delete`}>删除</Button>
+        </Popconfirm>
+      </Space> },
+    ]} />
+    <Modal title={`${newPassword?.username || "用户"} 的新密码`} open={!!newPassword} onCancel={() => setNewPassword(null)} onOk={() => setNewPassword(null)} okText="完成" cancelButtonProps={{ style: { display: "none" } }} destroyOnHidden>
+      <Paragraph>请立即复制并交给用户。关闭后无法再次查看。</Paragraph>
+      <Input readOnly value={newPassword?.value || ""} addonAfter={<Button type="text" icon={<CopyOutlined />} onClick={async () => { await copyText(newPassword?.value || ""); message.success("已复制"); }}>复制</Button>} />
     </Modal>
   </>;
 }
@@ -2242,8 +2286,8 @@ function AdminPage() {
           <div>
             <Title level={2}>管理控制台</Title>
           </div>
-          <Space>
-            <Tag icon={<SafetyCertificateOutlined />}>{data.username}</Tag>
+          <Space size={12}>
+            <div className="admin-account"><Avatar size={34} icon={<UserOutlined />} /><span>{data.username}</span></div>
             <Button
               icon={<LogoutOutlined />}
               onClick={() => act(() => api("/logout", "POST"), "已退出")}
@@ -2261,37 +2305,6 @@ function AdminPage() {
             showIcon
           />
         )}
-        <Row gutter={[16, 16]} className="stats">
-          <Col xs={12} md={6}>
-            <Card>
-              <Statistic
-                title="招聘信息"
-                value={data.records.filter((r) => r.kind === "job").length}
-              />
-            </Card>
-          </Col>
-          <Col xs={12} md={6}>
-            <Card>
-              <Statistic
-                title="宣讲会信息"
-                value={data.records.filter((r) => r.kind === "event").length}
-              />
-            </Card>
-          </Col>
-          <Col xs={12} md={6}>
-            <Card>
-              <Statistic
-                title="访客不可见 / 已归档"
-                value={data.records.filter((r) => !r.visitor_visible || r.archived).length}
-              />
-            </Card>
-          </Col>
-          <Col xs={12} md={6}>
-            <Card>
-              <Statistic title="自动同步周期" value="15" suffix="分钟" />
-            </Card>
-          </Col>
-        </Row>
         <Card className="admin-main">
           <Tabs
             defaultActiveKey="records"
@@ -2704,8 +2717,11 @@ function AdminPage() {
               },
               {
                 key: "invites",
-                label: <Space><UserOutlined />用户邀请</Space>,
-                children: <InviteManager />,
+                label: <Space><UserOutlined />用户管理</Space>,
+                children: <Tabs items={[
+                  { key: "users", label: "用户", children: <UserManager /> },
+                  { key: "invites", label: "邀请码", children: <InviteManager /> },
+                ]} />,
               },
               {
                 key: "settings",

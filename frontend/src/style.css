@@ -121,68 +121,6 @@ input {
   color: #7f8d7d;
   font-size: 12px;
 }
-.stats {
-  margin-bottom: 22px;
-}
-.stats .ant-card {
-  box-shadow: none;
-  height: 126px;
-  border-color: #e2e8de;
-}
-.stats .ant-card-body {
-  padding: 18px 22px;
-}
-.stats .ant-statistic-title {
-  margin-bottom: 7px;
-  font-size: 12px;
-  color: #7c887e;
-}
-.stats .ant-statistic-content {
-  font-size: 30px;
-  line-height: 42px;
-  font-weight: 500;
-}
-.stats .ant-statistic-content-prefix {
-  float: right;
-  font-size: 20px;
-  background: #f1f5ee;
-  color: #72917c;
-  width: 39px;
-  height: 39px;
-  display: grid;
-  place-items: center;
-  border-radius: 9px;
-  margin: 0;
-}
-.stats .ant-statistic-content-suffix {
-  font-size: 12px;
-  font-weight: 400;
-  color: #8b958e;
-  margin-left: 8px;
-}
-.stats .sync-stat {
-  background: #eaf2ed;
-  border-color: #dae7dd;
-}
-.sync-stat-label {
-  font-size: 12px;
-  color: #61806b;
-}
-.sync-stat-label .anticon {
-  margin-right: 8px;
-}
-.sync-stat-value {
-  font-size: 30px;
-  line-height: 39px;
-  color: #245c48;
-}
-.sync-stat-value small {
-  font-size: 12px;
-  font-weight: 400;
-}
-.sync-stat .ant-typography {
-  font-size: 11px;
-}
 .notice {
   display: flex;
   align-items: flex-start;
@@ -738,6 +676,26 @@ input {
 .admin-heading > .ant-typography {
   font-size: 13px;
 }
+.admin-account, .managed-user-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  color: #29473c;
+  font-size: 13px;
+  font-weight: 600;
+}
+.admin-account .ant-avatar, .managed-user-name .ant-avatar {
+  background: #e5f1e9;
+  color: #176456;
+  border: 1px solid #d4e5d8;
+}
+.user-manager-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin: 14px 0 20px;
+}
+.user-manager-heading h4 { margin: 0 !important; }
 .admin-toolbar {
   display: flex;
   align-items: center;
@@ -810,11 +768,16 @@ input {
 .login-foot {
   margin-top: 25px;
   display: flex;
+  align-items: center;
   justify-content: space-between;
-  font-size: 12px;
+  gap: 12px;
 }
-.login-foot .ant-typography {
-  font-size: 12px;
+.login-foot .ant-btn {
+  padding: 0;
+  height: auto;
+  line-height: 22px;
+  font-size: 14px;
+  font-weight: 500;
 }
 .admin-main {
   min-height: 500px;
@@ -923,9 +886,6 @@ input {
   }
   .intro {
     margin-bottom: 34px;
-  }
-  .stats {
-    margin-bottom: 24px;
   }
   .content-grid {
     grid-template-columns: minmax(0, 1fr) 302px;
@@ -1060,23 +1020,6 @@ input {
   .intro .ant-typography:last-child {
     font-size: 12px;
     line-height: 1.8;
-  }
-  .stats {
-    margin-bottom: 20px;
-  }
-  .stats .ant-card {
-    height: 112px;
-  }
-  .stats .ant-card-body {
-    padding: 15px 17px;
-  }
-  .stats .ant-statistic-content {
-    font-size: 27px;
-  }
-  .stats .ant-statistic-content-prefix {
-    font-size: 16px;
-    width: 29px;
-    height: 29px;
   }
   .notice {
     margin-bottom: 20px;

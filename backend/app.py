@@ -50,6 +50,14 @@ ALLOWED_AUDIO_EXTENSIONS = {'.m4a', '.mp3', '.mp4', '.wav', '.aac', '.flac', '.o
 DEFAULTS = {'title': '大潘的就业情报站', 'subtitle': '软件学院 · 校园招聘与宣讲会',
             'announcement': '信息来自学院就业共享表格。岗位要求与时间安排请以企业最新公告为准。',
             'source_url': SOURCE, 'auto_sync': True}
+FEISHU_PLACEHOLDER_TABLE = 'tblPA2KMUBFbcATH'
+FEISHU_PLACEHOLDER_RECORDS = ('recvtMQnfQxg1P', 'recvtN0vsn4xQa')
+
+
+def feishu_visible_sql(alias=''):
+    prefix = f'{alias}.' if alias else ''
+    ids = ','.join(f"'{record_id}'" for record_id in FEISHU_PLACEHOLDER_RECORDS)
+    return f"NOT ({prefix}table_id='{FEISHU_PLACEHOLDER_TABLE}' AND {prefix}record_id IN ({ids}))"
 
 
 def now():
@@ -115,7 +123,7 @@ def init():
         CREATE TABLE IF NOT EXISTS overrides(id TEXT PRIMARY KEY,data TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS deleted_records(id TEXT PRIMARY KEY,source TEXT,source_key TEXT,deleted_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS sync_logs(id INTEGER PRIMARY KEY AUTOINCREMENT,started TEXT,finished TEXT,status TEXT,jobs INTEGER,events INTEGER,changed INTEGER,message TEXT);
-        CREATE TABLE IF NOT EXISTS users(username TEXT PRIMARY KEY,password TEXT NOT NULL,role TEXT NOT NULL DEFAULT 'user');
+        CREATE TABLE IF NOT EXISTS users(username TEXT PRIMARY KEY,password TEXT NOT NULL,role TEXT NOT NULL DEFAULT 'user',enabled INTEGER NOT NULL DEFAULT 1);
         CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY,username TEXT NOT NULL,expires REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS login_attempts(ip TEXT,at REAL);
         CREATE TABLE IF NOT EXISTS registration_attempts(ip TEXT,at REAL);
@@ -276,6 +284,8 @@ def init():
                 c.execute('INSERT INTO users_role_safe(username,password,role) SELECT username,password,role FROM users')
                 c.execute('DROP TABLE users')
                 c.execute('ALTER TABLE users_role_safe RENAME TO users')
+        if 'enabled' not in {row['name'] for row in c.execute('PRAGMA table_info(users)')}:
+            c.execute('ALTER TABLE users ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1')
         c.execute("UPDATE sync_logs SET status='error',finished=?,message='服务重新启动，同步将重试' WHERE status='running'", (now(),))
         c.execute("UPDATE company_reviews SET status='queued',error='服务重新启动，分析将重试' WHERE status='running'")
         c.execute("UPDATE event_recordings SET status='queued',error='服务重新启动，录音处理将重试' WHERE status IN ('transcribing','summarizing')")
@@ -912,7 +922,7 @@ def current_user(request):
     with conn() as c:
         session = c.execute('''SELECT s.username,u.role FROM sessions s
                              JOIN users u ON u.username=s.username
-                             WHERE s.token=? AND s.expires>?''',
+                             WHERE s.token=? AND s.expires>? AND u.enabled=1''',
                             (hashlib.sha256(token.encode()).hexdigest(), time.time())).fetchone()
     if not session:
         raise HTTPException(401, '请先登录')
@@ -1177,6 +1187,67 @@ def delete_invite(code_hash: str, request: Request):
     return {'ok': True}
 
 
+def managed_user(c, username):
+    row = c.execute('SELECT username,role,enabled FROM users WHERE username=?', (username,)).fetchone()
+    if not row:
+        raise HTTPException(404, '用户不存在')
+    if row['role'] != 'user':
+        raise HTTPException(403, '只能管理普通用户')
+    return row
+
+
+@app.get('/api/admin/users')
+def list_users(request: Request):
+    admin(request)
+    with conn() as c:
+        rows = c.execute('''SELECT u.username,u.role,u.enabled,
+            (SELECT count(*) FROM admin_bookmarks b WHERE b.username=u.username) AS bookmarks,
+            (SELECT count(*) FROM feishu_annotations a WHERE a.username=u.username) AS annotations
+            FROM users u WHERE u.role='user' ORDER BY u.username COLLATE NOCASE''').fetchall()
+    return {'items': [{**dict(row), 'enabled': bool(row['enabled'])} for row in rows]}
+
+
+class UserEnabledUpdate(BaseModel):
+    enabled: bool
+
+
+@app.put('/api/admin/users/{username}/enabled')
+def set_user_enabled(username: str, body: UserEnabledUpdate, request: Request):
+    admin(request)
+    with conn() as c:
+        managed_user(c, username)
+        c.execute('UPDATE users SET enabled=? WHERE username=?', (int(body.enabled), username))
+        if not body.enabled:
+            c.execute('DELETE FROM sessions WHERE username=?', (username,))
+        audit(c, '启用用户' if body.enabled else '禁用用户', username)
+    return {'ok': True, 'enabled': body.enabled}
+
+
+@app.post('/api/admin/users/{username}/reset-password')
+def reset_user_password(username: str, request: Request):
+    admin(request)
+    password = secrets.token_urlsafe(24) + 'Aa1!'
+    with conn() as c:
+        managed_user(c, username)
+        c.execute('UPDATE users SET password=? WHERE username=?', (hash_pw(password), username))
+        c.execute('DELETE FROM sessions WHERE username=?', (username,))
+        audit(c, '重置用户密码', username)
+    return {'password': password}
+
+
+@app.delete('/api/admin/users/{username}')
+def delete_user(username: str, request: Request):
+    admin(request)
+    with conn() as c:
+        managed_user(c, username)
+        c.execute('DELETE FROM sessions WHERE username=?', (username,))
+        c.execute('DELETE FROM admin_bookmarks WHERE username=?', (username,))
+        c.execute('DELETE FROM feishu_annotations WHERE username=?', (username,))
+        c.execute('DELETE FROM users WHERE username=?', (username,))
+        audit(c, '删除用户', username)
+    return {'ok': True}
+
+
 @app.post('/api/login')
 def login(body: Login, request: Request, response: Response):
     ip = request.headers.get('x-real-ip') or request.client.host
@@ -1185,14 +1256,14 @@ def login(body: Login, request: Request, response: Response):
         if c.execute('SELECT count(*) FROM login_attempts WHERE ip=?', (ip,)).fetchone()[0] >= 10:
             raise HTTPException(429, '尝试次数过多，请 15 分钟后重试')
         username = body.username.strip().lower()
-        row = c.execute('SELECT password,role FROM users WHERE username=?', (username,)).fetchone()
+        row = c.execute('SELECT password,role,enabled FROM users WHERE username=?', (username,)).fetchone()
         if row:
             valid = check_pw(body.password, row['password'])
         else:
             # Keep password-hash work for unknown users, but never authenticate them.
             check_pw(body.password, hash_pw('dummy-password'))
             valid = False
-        if not valid:
+        if not valid or not row or not row['enabled']:
             c.execute('INSERT INTO login_attempts VALUES(?,?)', (ip, time.time()))
             c.commit()
             raise HTTPException(401, '用户名或密码错误')
@@ -1259,7 +1330,7 @@ def feishu_status_payload():
         last = c.execute('SELECT * FROM feishu_sync_runs ORDER BY id DESC LIMIT 1').fetchone()
         counts = c.execute('''SELECT count(*) AS records,
           count(DISTINCT table_id) AS tables FROM feishu_records
-          WHERE base_token=? AND source_missing=0''', (base,)).fetchone()
+          WHERE base_token=? AND source_missing=0 AND ''' + feishu_visible_sql(), (base,)).fetchone()
     return {
         **cfg,
         'running': feishu_lock.locked(),
@@ -1303,7 +1374,7 @@ def feishu_manifest(request: Request):
                 'SELECT view_id,name,payload FROM feishu_views WHERE base_token=? AND table_id=? ORDER BY view_id',
                 (base, table['table_id']))]
             table['records'] = c.execute(
-                'SELECT count(*) FROM feishu_records WHERE base_token=? AND table_id=? AND source_missing=0',
+                'SELECT count(*) FROM feishu_records WHERE base_token=? AND table_id=? AND source_missing=0 AND ' + feishu_visible_sql(),
                 (base, table['table_id'])).fetchone()[0]
     return {'base_token': base, 'tables': tables, 'status': feishu_status_payload()}
 
@@ -1340,7 +1411,7 @@ def feishu_records(request: Request, table_id: str = '', q: str = '', limit: int
                ON s.base_token=r.base_token AND s.table_id=r.table_id AND s.record_id=r.record_id
              LEFT JOIN feishu_annotations a ON a.username=? AND a.base_token=r.base_token
                AND a.table_id=r.table_id AND a.record_id=r.record_id
-             WHERE r.base_token=? AND r.source_missing=0'''
+             WHERE r.base_token=? AND r.source_missing=0 AND ''' + feishu_visible_sql('r')
     if table_id:
         sql += ' AND r.table_id=?'; args.append(table_id)
     if q:
