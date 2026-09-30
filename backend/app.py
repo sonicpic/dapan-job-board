@@ -286,6 +286,8 @@ def init():
                 c.execute('ALTER TABLE users_role_safe RENAME TO users')
         if 'enabled' not in {row['name'] for row in c.execute('PRAGMA table_info(users)')}:
             c.execute('ALTER TABLE users ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1')
+        # The former focus tiers are no longer part of the application workflow.
+        c.execute('UPDATE feishu_annotations SET priority=0 WHERE priority<>0')
         c.execute("UPDATE sync_logs SET status='error',finished=?,message='服务重新启动，同步将重试' WHERE status='running'", (now(),))
         c.execute("UPDATE company_reviews SET status='queued',error='服务重新启动，分析将重试' WHERE status='running'")
         c.execute("UPDATE event_recordings SET status='queued',error='服务重新启动，录音处理将重试' WHERE status IN ('transcribing','summarizing')")
@@ -1382,12 +1384,12 @@ def feishu_manifest(request: Request):
 @app.get('/api/workspace/records')
 @app.get('/api/admin/feishu/records')
 def feishu_records(request: Request, table_id: str = '', q: str = '', limit: int = 100, offset: int = 0,
-                   status: list[str] = Query(default=[]), priority: int = -1,
+                   status: list[str] = Query(default=[]),
                    industry: list[str] = Query(default=[]), company_type: list[str] = Query(default=[]),
                    recruitment_type: list[str] = Query(default=[]), location: list[str] = Query(default=[]),
                    education: list[str] = Query(default=[]), exam: list[str] = Query(default=[]),
                    tag: list[str] = Query(default=[]), sort: str = 'updated_date', direction: str = 'desc',
-                   group_by: str = '', focus: list[int] = Query(default=[]),
+                   group_by: str = '',
                    deadline_days: int = Query(default=0, ge=0, le=365)):
     username = workspace_user(request)
     ensure_feishu_search_index()
@@ -1397,7 +1399,7 @@ def feishu_records(request: Request, table_id: str = '', q: str = '', limit: int
                        'location': location, 'education': education, 'exam': exam}
     sort_columns = {'company': 's.company COLLATE NOCASE', 'position': 's.position COLLATE NOCASE',
                     'industry': 's.industry COLLATE NOCASE', 'deadline': 's.deadline_sort COLLATE NOCASE',
-                    'updated_date': 's.updated_date COLLATE NOCASE', 'priority': 'COALESCE(a.priority,0)',
+                    'updated_date': 's.updated_date COLLATE NOCASE',
                     'status': "COALESCE(a.status,'待筛选') COLLATE NOCASE"}
     sort_sql = sort_columns.get(sort, sort_columns['updated_date'])
     direction_sql = 'ASC' if direction.lower() == 'asc' else 'DESC'
@@ -1405,7 +1407,7 @@ def feishu_records(request: Request, table_id: str = '', q: str = '', limit: int
     sql = '''SELECT r.table_id,r.record_id,r.payload,r.first_seen,r.last_seen,
                     s.company,s.position,s.industry,s.company_type,s.recruitment_type,s.target,s.location,
                     s.education,s.exam,s.deadline,s.deadline_label,s.deadline_sort,s.updated_date,
-                    COALESCE(a.status,'待筛选') AS annotation_status,COALESCE(a.priority,0) AS annotation_priority,
+                    COALESCE(a.status,'待筛选') AS annotation_status,
                     COALESCE(a.tags,'[]') AS annotation_tags,COALESCE(a.note,'') AS annotation_note,a.updated_at AS annotation_updated
              FROM feishu_records r JOIN feishu_record_search s
                ON s.base_token=r.base_token AND s.table_id=r.table_id AND s.record_id=r.record_id
@@ -1436,12 +1438,6 @@ def feishu_records(request: Request, table_id: str = '', q: str = '', limit: int
     if statuses:
         sql += " AND COALESCE(a.status,'待筛选') IN (" + ','.join('?' for _ in statuses) + ')'
         args.extend(statuses)
-    focus_levels = [value for value in focus if value in (1, 2, 3)]
-    if focus_levels:
-        sql += " AND COALESCE(a.status,'待筛选')='关注' AND COALESCE(a.priority,0) IN (" + ','.join('?' for _ in focus_levels) + ')'
-        args.extend(focus_levels)
-    if priority >= 0:
-        sql += ' AND COALESCE(a.priority,0)=?'; args.append(min(priority, 3))
     tags_filter = set(value for value in tag if value)
     if tags_filter:
         sql += " AND EXISTS(SELECT 1 FROM json_each(COALESCE(a.tags,'[]')) WHERE value IN (SELECT value FROM json_each(?)))"
@@ -1458,25 +1454,20 @@ def feishu_records(request: Request, table_id: str = '', q: str = '', limit: int
         rows = [dict(row) for row in c.execute(sql + order_sql, args + [limit, offset]).fetchall()]
         facet_rows = [dict(row) for row in c.execute('''SELECT COALESCE(a.status,'待筛选') AS annotation_status,
             s.industry,s.company_type,s.recruitment_type,s.location,s.education,s.exam,
-            COALESCE(a.priority,0) AS annotation_priority,COALESCE(a.tags,'[]') AS annotation_tags''' + facet_where, facet_args).fetchall()]
-    facet_keys = ('annotation_status', *allowed_filters, 'tags', 'focus')
+            COALESCE(a.tags,'[]') AS annotation_tags''' + facet_where, facet_args).fetchall()]
+    facet_keys = ('annotation_status', *allowed_filters, 'tags')
     counts = {key: {} for key in facet_keys}
     for row in facet_rows:
         row_status = row['annotation_status']
-        row_priority = row['annotation_priority']
         try: row_tags_raw = json.loads(row['annotation_tags'])
         except json.JSONDecodeError: row_tags_raw = []
         row_tags = {tag_value for tag_value in row_tags_raw if isinstance(tag_value, str)}
-        tokens = {'annotation_status': {row_status}, 'tags': row_tags,
-                  'focus': {str(row_priority)} if row_status == '关注' and row_priority in (1, 2, 3) else set()}
+        tokens = {'annotation_status': {row_status}, 'tags': row_tags}
         tokens.update({key: set(feishu_facet_values(row[key], key)) for key in allowed_filters})
         matches = {'annotation_status': not statuses or row_status in statuses,
-                   'focus': not focus_levels or (row_status == '关注' and row_priority in focus_levels),
                    'tags': not tags_filter or bool(row_tags.intersection(tags_filter))}
         matches.update({key: not selected_facets[key] or bool(tokens[key].intersection(selected_facets[key]))
                         for key in allowed_filters})
-        if priority >= 0 and row_priority != min(priority, 3):
-            continue
         failures = {key for key, matched in matches.items() if not matched}
         for key in facet_keys:
             if failures and failures != {key}:
@@ -1485,7 +1476,6 @@ def feishu_records(request: Request, table_id: str = '', q: str = '', limit: int
                 counts[key][value] = counts[key].get(value, 0) + 1
     facets = {key: dict(sorted(values.items(), key=lambda pair: (-pair[1], pair[0])))
               for key, values in counts.items()}
-    facets['focus'] = {str(level): counts['focus'].get(str(level), 0) for level in (1, 2, 3)}
     items = []
     for row in rows:
         try: payload = json.loads(row['payload'])
@@ -1495,7 +1485,7 @@ def feishu_records(request: Request, table_id: str = '', q: str = '', limit: int
         items.append({'table_id': row['table_id'], 'record_id': row['record_id'], 'fields': payload.get('fields', payload),
                       'created_time': payload.get('created_time'), 'last_modified_time': payload.get('last_modified_time'),
                       'first_seen': row['first_seen'], 'last_seen': row['last_seen'],
-                      'annotation': {'status': row['annotation_status'], 'priority': row['annotation_priority'],
+                      'annotation': {'status': row['annotation_status'],
                                      'tags': tags, 'note': row['annotation_note'], 'updated_at': row['annotation_updated']},
                       'deadline': {'raw': row['deadline'], 'label': row['deadline_label'], 'sort': row['deadline_sort']},
                       'group_value': row.get('annotation_status' if group_by == 'annotation_status' else group_by, '') if group_by else ''})
@@ -1505,12 +1495,11 @@ def feishu_records(request: Request, table_id: str = '', q: str = '', limit: int
 
 class FeishuAnnotationUpdate(BaseModel):
     status: str = Field(default='待筛选', min_length=1, max_length=40)
-    priority: int = Field(default=0, ge=0, le=3)
     tags: list[str] = Field(default_factory=list, max_length=20)
     note: str = Field(default='', max_length=4000)
 
 
-FEISHU_STATUSES = {'待筛选', '关注', '已投递', '笔试', '面试', 'Offer', '暂不考虑'}
+FEISHU_STATUSES = {'待筛选', '关注', '已投递', '笔试', '面试', 'Offer', '流程终止', '暂不考虑'}
 
 
 @app.get('/api/workspace/annotations')
@@ -1518,7 +1507,7 @@ FEISHU_STATUSES = {'待筛选', '关注', '已投递', '笔试', '面试', 'Offe
 def feishu_annotations(request: Request):
     username = workspace_user(request); base = feishu.target_config()['base_token']
     with conn() as c:
-        rows = c.execute('SELECT table_id,record_id,status,priority,tags,note,updated_at FROM feishu_annotations WHERE username=? AND base_token=?', (username, base)).fetchall()
+        rows = c.execute('SELECT table_id,record_id,status,tags,note,updated_at FROM feishu_annotations WHERE username=? AND base_token=?', (username, base)).fetchall()
     result = []
     for row in rows:
         item = dict(row)
@@ -1534,9 +1523,6 @@ def update_feishu_annotation(table_id: str, record_id: str, body: FeishuAnnotati
     username = workspace_user(request); base = feishu.target_config()['base_token']
     if body.status.strip() not in FEISHU_STATUSES:
         raise HTTPException(422, '无效的跟进状态')
-    if body.status.strip() == '关注' and body.priority == 0:
-        raise HTTPException(422, '请为关注设置一个档位')
-    effective_priority = body.priority if body.status.strip() == '关注' else 0
     tags = list(dict.fromkeys(str(tag).strip()[:40] for tag in body.tags if str(tag).strip()))[:20]
     with conn() as c:
         if not c.execute('SELECT 1 FROM feishu_records WHERE base_token=? AND table_id=? AND record_id=? AND source_missing=0', (base, table_id, record_id)).fetchone():
@@ -1544,8 +1530,8 @@ def update_feishu_annotation(table_id: str, record_id: str, body: FeishuAnnotati
         c.execute('''INSERT INTO feishu_annotations(username,base_token,table_id,record_id,status,priority,tags,note,updated_at)
                      VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(username,base_token,table_id,record_id) DO UPDATE SET
                      status=excluded.status,priority=excluded.priority,tags=excluded.tags,note=excluded.note,updated_at=excluded.updated_at''',
-                  (username, base, table_id, record_id, body.status.strip(), effective_priority, json.dumps(tags, ensure_ascii=False), body.note, now()))
-    return {'ok': True, 'status': body.status.strip(), 'priority': effective_priority, 'tags': tags, 'note': body.note}
+                  (username, base, table_id, record_id, body.status.strip(), 0, json.dumps(tags, ensure_ascii=False), body.note, now()))
+    return {'ok': True, 'status': body.status.strip(), 'tags': tags, 'note': body.note}
 
 
 class ReviewRequest(BaseModel):

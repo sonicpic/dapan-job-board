@@ -74,7 +74,7 @@ def test_users_share_public_records_but_not_private_state_or_admin_access(client
         assert app.run_feishu_sync()
         assert alice.get('/api/workspace/records').json()['total'] == 1
         assert bob.get('/api/workspace/records').json()['total'] == 1
-        body = {'status': '关注', 'priority': 3, 'tags': ['必投'], 'note': 'Alice 的个人备注'}
+        body = {'status': '关注', 'tags': ['内推'], 'note': 'Alice 的个人备注'}
         assert alice.put('/api/workspace/annotations/tbl1/rec1', json=body).status_code == 200
         alice_row = alice.get('/api/workspace/records').json()['items'][0]
         bob_row = bob.get('/api/workspace/records').json()['items'][0]

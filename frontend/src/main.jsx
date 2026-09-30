@@ -270,6 +270,7 @@ function Header({ active = "jobs", onChange, config, admin = false, role = "gues
             value={active}
             onChange={onChange}
             options={[
+              ...(showWorkspace ? [{ label: "职位库", value: "feishu", icon: <BookOutlined /> }] : []),
               { label: "招聘信息", value: "jobs", icon: <BankOutlined /> },
               {
                 label: "宣讲日程",
@@ -278,7 +279,6 @@ function Header({ active = "jobs", onChange, config, admin = false, role = "gues
               },
               { label: "我的收藏", value: "saved", icon: <StarOutlined /> },
               ...(showInterviews ? [{ label: "面试记录", value: "interviews", icon: <AudioOutlined /> }] : []),
-              ...(showWorkspace ? [{ label: "职位库", value: "feishu", icon: <BookOutlined /> }] : []),
             ]}
           />
         )}
@@ -1034,12 +1034,14 @@ function PublicPage() {
       try {
         const session = await api("/session");
         setRole(session.role || "guest");
+        setTab(session.role && session.role !== "guest" ? "feishu" : "jobs");
         if (session.role && session.role !== "guest") {
           const bookmarks = await api("/me/bookmarks");
           setSaved(bookmarks.ids || []);
         }
       } catch {
         setRole("guest");
+        setTab("jobs");
       }
       await load();
     };

@@ -784,11 +784,11 @@ input {
 }
 .feishu-page { max-width: 1480px; padding-top: 25px; }
 .feishu-workspace > .ant-alert { margin-bottom: 14px; }
-.feishu-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; margin-bottom: 28px; padding-bottom: 18px; border-bottom: 1px solid #e5ebe5; }
+.feishu-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; margin-bottom: 18px; padding-bottom: 18px; border-bottom: 1px solid #e5ebe5; }
 .feishu-heading h2.ant-typography { margin: 0 0 7px; color: #183a35; letter-spacing: -.5px; }
 .feishu-count { display: inline-block; margin-left: 8px; padding: 4px 9px; color: #327560; background: #eaf5ed; border-radius: 4px; font-size: 13px; vertical-align: middle; }
 .feishu-heading > .ant-space .ant-btn { color: #577167; }
-.feishu-filter-panel { margin-bottom: 25px; padding: 17px 0 11px; border-top: 1px solid #e5ebe5; border-bottom: 1px solid #e5ebe5; }
+.feishu-filter-panel { margin-bottom: 25px; padding: 0 0 11px; border-bottom: 1px solid #e5ebe5; }
 .feishu-filter-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 13px; }
 .feishu-filter-toolbar > .ant-input-affix-wrapper { flex: 1 1 400px; width: min(550px, 100%); max-width: 550px; border-color: #dce8df; border-radius: 6px; background: #f9fbf9; box-shadow: none; }
 .feishu-filter-toolbar > .ant-input-affix-wrapper-focused { border-color: #63a987; box-shadow: 0 0 0 3px rgb(68 151 105 / 10%); }
@@ -805,6 +805,8 @@ input {
 .feishu-facet-options .ant-btn:hover, .feishu-facet-options .ant-btn.selected { color: #176456; background: #eaf5ed; }
 .feishu-facet-options .ant-btn small { margin-left: 5px; color: #a3aea6; font-size: 10px; }
 .feishu-facet-options .ant-btn.selected small { color: #4e9676; }
+.feishu-facet-options .ant-btn.selected[data-status="流程终止"] { color: #b24545; background: #fff0ef; }
+.feishu-facet-options .ant-btn.selected[data-status="流程终止"] small { color: #b96767; }
 .feishu-facet-search-slot { flex: 0 0 28px; width: 28px; height: 27px; overflow: hidden; transition: flex-basis .22s ease, width .22s ease; }
 .feishu-facet-search-slot.open { flex-basis: 176px; width: 176px; }
 .feishu-facet-search-slot .ant-btn { width: 28px; padding: 0; color: #578573; }
@@ -815,7 +817,12 @@ input {
 .feishu-expand { color: #39816b !important; }
 .feishu-dot { width: 5px; height: 5px; margin-right: 4px; border-radius: 50%; background: #8d9b91; }
 .feishu-dot-status { background: #d19a35; }
-.feishu-dot-focus { background: #df9c27; }
+.feishu-dot-status[data-status="待筛选"], .feishu-dot-status[data-status="暂不考虑"] { background: #94a39a; }
+.feishu-dot-status[data-status="已投递"] { background: #4b8fc4; }
+.feishu-dot-status[data-status="笔试"] { background: #40a7ad; }
+.feishu-dot-status[data-status="面试"] { background: #906ec1; }
+.feishu-dot-status[data-status="Offer"] { background: #37956b; }
+.feishu-dot-status[data-status="流程终止"] { background: #cf5d5d; }
 .feishu-list-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 18px; margin-bottom: 12px; padding-bottom: 10px; border-bottom: 1px solid #e5ebe5; }
 .feishu-list-heading strong { color: #24463d; font-size: 17px; font-weight: 650; }
 .feishu-list-heading > div:first-child span { margin-left: 10px; color: #97a49b; font-size: 12px; }
@@ -839,9 +846,23 @@ input {
 .feishu-one-line { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .feishu-small-tags { display: flex; gap: 3px; max-width: 100%; overflow: hidden; }
 .feishu-clipped-tag { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.feishu-focus-action.ant-btn { display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 2px 5px; color: #88958c; font-size: 12px; }
-.feishu-focus-action .anticon { color: #dd9a27; }
-.feishu-focus-action:hover { color: #90691f; background: #fff7df; }
+.feishu-status-trigger.ant-btn { display: inline-flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 103px; height: 32px; padding: 0 9px; border: 1px solid #dfe8e1; border-radius: 6px; color: #536b5d; background: #f7faf7; font-size: 12px; font-weight: 600; box-shadow: 0 1px 2px rgb(28 62 43 / 4%); }
+.feishu-status-trigger.ant-btn:not(:disabled):hover { border-color: #9fc7ad; color: #176456; background: #f0f7f1; }
+.feishu-status-trigger .feishu-status-dot, .feishu-status-option i { flex: 0 0 7px; width: 7px; height: 7px; border-radius: 50%; background: #94a39a; }
+.feishu-status-arrow { margin-left: auto; color: #82978a; font-size: 9px; }
+.feishu-status-option { display: inline-flex; align-items: center; gap: 9px; }
+.feishu-status-trigger[data-status="关注"] { border-color: #eedba6; color: #88611c; background: #fffaec; }
+.feishu-status-trigger[data-status="关注"] .feishu-status-dot, .feishu-status-option[data-status="关注"] i { background: #d19a35; }
+.feishu-status-trigger[data-status="已投递"] { border-color: #cfdfed; color: #376d9c; background: #f2f7fc; }
+.feishu-status-trigger[data-status="已投递"] .feishu-status-dot, .feishu-status-option[data-status="已投递"] i { background: #4b8fc4; }
+.feishu-status-trigger[data-status="笔试"] { border-color: #cde8e5; color: #287a80; background: #f0faf9; }
+.feishu-status-trigger[data-status="笔试"] .feishu-status-dot, .feishu-status-option[data-status="笔试"] i { background: #40a7ad; }
+.feishu-status-trigger[data-status="面试"] { border-color: #e1d8ed; color: #7659a1; background: #f8f5fc; }
+.feishu-status-trigger[data-status="面试"] .feishu-status-dot, .feishu-status-option[data-status="面试"] i { background: #906ec1; }
+.feishu-status-trigger[data-status="Offer"] { border-color: #cbe8d7; color: #287650; background: #eff9f2; }
+.feishu-status-trigger[data-status="Offer"] .feishu-status-dot, .feishu-status-option[data-status="Offer"] i { background: #37956b; }
+.feishu-status-trigger[data-status="流程终止"] { border-color: #efcaca; color: #b24545; background: #fff2f1; }
+.feishu-status-trigger[data-status="流程终止"] .feishu-status-dot, .feishu-status-option[data-status="流程终止"] i { background: #cf5d5d; }
 .feishu-detail-drawer .ant-drawer-header { border-bottom: 1px solid #edf1ed; }
 .feishu-detail-tags { margin: 4px 0 20px; }
 .feishu-position-detail { max-height: 170px; overflow: auto; padding: 11px 13px; white-space: pre-wrap; color: #52665a; background: #f7faf6; border-left: 3px solid #b6d8be; }
@@ -853,9 +874,14 @@ input {
 .feishu-follow-options { display: flex; flex-wrap: wrap; gap: 4px; }
 .feishu-follow-options .ant-btn { height: 28px; padding: 2px 9px; color: #78877e; border-radius: 4px; }
 .feishu-follow-options .ant-btn.selected { color: #176456; background: #e7f4eb; }
+.feishu-follow-options .ant-btn.selected[data-status="流程终止"] { color: #b24545; background: #fff0ef; }
 .feishu-follow-field > .ant-input, .feishu-follow-field > .ant-input-affix-wrapper, .feishu-follow-field > textarea { flex: 1; }
 .feishu-raw-heading { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; }
 .feishu-raw-heading h5.ant-typography { margin: 0; }
+.feishu-raw-details .ant-descriptions-view table { width: 100%; table-layout: fixed; }
+.feishu-raw-details .ant-descriptions-item-label { width: 148px; min-width: 148px; box-sizing: border-box; }
+.feishu-field-label { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.feishu-raw-details .ant-descriptions-item-content { min-width: 0; overflow-wrap: anywhere; }
 .feishu-field-value { display: block; max-height: 160px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 @media (max-width: 760px) {
   .feishu-heading { align-items: flex-start; }
@@ -1217,11 +1243,12 @@ input {
   .feishu-mobile-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 8px; }
   .feishu-mobile-tags .ant-tag { max-width: 46%; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
   .feishu-mobile-tags .feishu-mobile-industry { max-width: 55%; }
-  .feishu-mobile-tags .feishu-focus-action { height: 25px; margin-left: auto; padding: 0 4px; }
+  .feishu-mobile-tags .feishu-status-trigger { min-width: 112px; height: 29px; }
   .feishu-mobile-pager { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 18px 0 0; color: #77877d; font-size: 12px; }
   .feishu-mobile-pager > label { flex: 0 0 auto; }
   .feishu-mobile-pager > .ant-select { flex: 0 0 78px; }
   .feishu-mobile-pagination.ant-pagination { display: flex; justify-content: flex-end; gap: 4px; margin: 0 0 0 auto; }
   .feishu-detail-drawer .ant-drawer-body { padding: 16px !important; }
-  .feishu-detail-drawer .ant-descriptions-item-label { width: 94px; }
+  .feishu-raw-details .ant-descriptions-item-label { width: 120px; min-width: 120px; padding: 10px 12px !important; }
+  .feishu-raw-details .ant-descriptions-item-content { padding: 10px 12px !important; }
 }

@@ -3,21 +3,20 @@ import { App, Alert, Button, Descriptions, Drawer, Dropdown, Empty, Input, List,
 import {
   AppstoreOutlined, CheckCircleOutlined, ClearOutlined, ClockCircleOutlined, EnvironmentOutlined, ExportOutlined,
   EyeOutlined, FilterOutlined, ReloadOutlined, SearchOutlined, SortAscendingOutlined, SortDescendingOutlined,
-  StarFilled, StarOutlined, SyncOutlined,
+  DownOutlined, SyncOutlined,
 } from "@ant-design/icons";
 import dayjs from "dayjs";
 
 const { Title, Text, Paragraph } = Typography;
-const STATUSES = ["待筛选", "关注", "已投递", "笔试", "面试", "Offer", "暂不考虑"];
-const COLORS = { 待筛选: "default", 关注: "gold", 已投递: "blue", 笔试: "cyan", 面试: "purple", Offer: "green", 暂不考虑: "red" };
-const FOCUS = [{ value: 3, label: "必投" }, { value: 2, label: "重点关注" }, { value: 1, label: "可以冲" }];
+const STATUSES = ["待筛选", "关注", "已投递", "笔试", "面试", "Offer", "流程终止", "暂不考虑"];
+const COLORS = { 待筛选: "default", 关注: "gold", 已投递: "blue", 笔试: "cyan", 面试: "purple", Offer: "green", 流程终止: "red", 暂不考虑: "default" };
 const FACETS = [
   ["industry", "行业", "industry"], ["company_type", "企业性质", "company_type"],
   ["recruitment_type", "招聘类型", "recruitment_type"], ["location", "工作地点", "location"],
   ["education", "学历", "education"], ["exam", "笔试", "exam"], ["tag", "我的标签", "tags"],
 ];
 const GROUPS = [
-  ["", "不分组"], ["annotation_status", "跟进状态"], ["industry", "行业"],
+  ["", "不分组"], ["annotation_status", "投递流程"], ["industry", "行业"],
   ["company_type", "企业性质"], ["recruitment_type", "招聘类型"],
   ["location", "工作地点"], ["education", "学历"],
 ];
@@ -26,13 +25,11 @@ const MOBILE_PAGE_SIZE = 10;
 const DEADLINE_WINDOWS = [1, 3, 7, 14, 30];
 const MOBILE_SORTS = [
   { label: "更新", value: "updated_date" }, { label: "截止", value: "deadline" },
-  { label: "关注", value: "priority" }, { label: "公司", value: "company" },
-  { label: "进度", value: "status" }, { label: "行业", value: "industry" },
+  { label: "公司", value: "company" }, { label: "流程", value: "status" }, { label: "行业", value: "industry" },
 ];
 const chinaDay = () => new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
 const display = (value) => value == null || value === "" ? "—" : typeof value === "object" ? JSON.stringify(value) : String(value);
 const safeHref = (value) => typeof value === "string" && /^https?:\/\/\S+$/i.test(value.trim()) ? value.trim() : null;
-const labelForFocus = (value) => FOCUS.find((item) => item.value === value)?.label || "关注";
 
 async function request(path, method = "GET", body) {
   const response = await fetch("/api" + path, {
@@ -69,9 +66,10 @@ function FacetRow({ title, values, selected, onChange, labels = {}, color = "def
             <Tooltip title={`查找${title}`}><Button type="text" icon={<SearchOutlined />} aria-label={`查找${title}筛选项`}
               onClick={() => setFinding(true)} /></Tooltip>}
         </div>}
-        {visible.map(([value, count]) => <Button type="text" key={value} className={selected?.includes(value) ? "selected" : ""}
+        {visible.map(([value, count]) => <Button type="text" key={value} data-status={color === "status" ? value : undefined}
+          className={selected?.includes(value) ? "selected" : ""}
           onClick={() => onChange(selected?.includes(value) ? selected.filter((item) => item !== value) : [...(selected || []), value])}>
-          {color !== "default" && <span className={`feishu-dot feishu-dot-${color}`} />}{labels[value] || value}<small>{count}</small>
+          {color !== "default" && <span className={`feishu-dot feishu-dot-${color}`} data-status={color === "status" ? value : undefined} />}{labels[value] || value}<small>{count}</small>
         </Button>)}
         {term && matching.length === 0 && <span className="feishu-facet-empty">没有匹配的筛选项</span>}
       </div>
@@ -164,7 +162,7 @@ export default function FeishuWorkspace({ isAdmin = false }) {
     setBusy(true);
     try {
       await request(`/workspace/annotations/${encodeURIComponent(row.table_id)}/${encodeURIComponent(row.record_id)}`, "PUT", {
-        status: next.status, priority: next.status === "关注" ? Number(next.priority) || 1 : 0,
+        status: next.status,
         tags: String(next.tags || "").split(/[,，]/).map((value) => value.trim()).filter(Boolean), note: next.note || "",
       });
       message.success("跟进已保存");
@@ -190,11 +188,14 @@ export default function FeishuWorkspace({ isAdmin = false }) {
     if (nextSize !== pageSize) { setPageSize(nextSize); setPage(1); }
     else setPage(nextPage);
   };
-  const focusAction = (row) => <Dropdown trigger={["click"]} menu={{ items: FOCUS.map(({ value, label }) => ({ key: String(value), label })),
-    onClick: ({ key }) => save(row, { ...row.annotation, tags: (row.annotation.tags || []).join("，"), status: "关注", priority: Number(key) }, false) }}>
-    <Button type="text" className="feishu-focus-action" aria-label={`设置 ${row.fields?.["公司名称"] || "公司"} 的关注程度`}>
-      {row.annotation.status === "关注" ? <StarFilled /> : <StarOutlined />}
-      {row.annotation.status === "关注" ? labelForFocus(row.annotation.priority) : "加入关注"}
+  const statusAction = (row) => <Dropdown trigger={["click"]} menu={{
+    selectedKeys: [row.annotation.status],
+    items: STATUSES.map((value) => ({ key: value, label: <span className="feishu-status-option" data-status={value}><i />{value}</span> })),
+    onClick: ({ key }) => { if (key !== row.annotation.status) save(row, { ...row.annotation, tags: (row.annotation.tags || []).join("，"), status: key }, false); },
+  }}>
+    <Button type="text" className="feishu-status-trigger" data-status={row.annotation.status} disabled={busy}
+      aria-label={`修改 ${row.fields?.["公司名称"] || "公司"} 的投递流程，当前为${row.annotation.status}`}>
+      <span className="feishu-status-dot" />{row.annotation.status}<DownOutlined className="feishu-status-arrow" />
     </Button>
   </Dropdown>;
   const columns = [
@@ -207,10 +208,8 @@ export default function FeishuWorkspace({ isAdmin = false }) {
           <span className="feishu-two-line">{display(row.fields?.["校招岗位"] || row.fields?.["招聘岗位"] || row.fields?.["岗位"])}</span>
         </Tooltip>
       </div> },
-    { title: "跟进", key: "status", width: 118, sorter: !deadlineDays, sortDirections: ["ascend", "descend", "ascend"], sortOrder: deadlineDays ? null : sortOrder("status"),
-      render: (_, row) => <Tag color={COLORS[row.annotation.status]}>{row.annotation.status}</Tag> },
-    { title: "关注程度", key: "priority", width: 118, sorter: !deadlineDays, sortDirections: ["ascend", "descend", "ascend"], sortOrder: deadlineDays ? null : sortOrder("priority"),
-      render: (_, row) => focusAction(row) },
+    { title: "投递流程", key: "status", width: 130, sorter: !deadlineDays, sortDirections: ["ascend", "descend", "ascend"], sortOrder: deadlineDays ? null : sortOrder("status"),
+      render: (_, row) => statusAction(row) },
     { title: "行业 / 性质", key: "industry", width: 176, sorter: !deadlineDays, sortDirections: ["ascend", "descend", "ascend"], sortOrder: deadlineDays ? null : sortOrder("industry"),
       render: (_, row) => <div className="feishu-small-tags">
         {row.fields?.["公司行业"] && <Tag color="cyan" className="feishu-clipped-tag">{row.fields["公司行业"]}</Tag>}
@@ -260,11 +259,8 @@ export default function FeishuWorkspace({ isAdmin = false }) {
         </div>
       </div>
       <div className={`feishu-filter-rows${filtersOpen ? " open" : ""}`}>
-      <FacetRow key={`status-${filterResetKey}`} title="投递进度" values={Object.fromEntries(STATUSES.map((value) => [value, facets.annotation_status?.[value] || 0]))}
+      <FacetRow key={`status-${filterResetKey}`} title="投递流程" values={Object.fromEntries(STATUSES.map((value) => [value, facets.annotation_status?.[value] || 0]))}
         selected={filters.status} onChange={(values) => setFacet("status", values)} color="status" limit={20} />
-      <FacetRow key={`focus-${filterResetKey}`} title="关注程度" values={Object.fromEntries(FOCUS.map(({ value }) => [String(value), facets.focus?.[value] || 0]))}
-        labels={Object.fromEntries(FOCUS.map(({ value, label }) => [String(value), label]))}
-        selected={filters.focus} onChange={(values) => setFacet("focus", values)} color="focus" limit={20} />
       <div className="feishu-facet-row">
         <Tooltip title="从今天起算，包含今天；仅纳入有明确日期的职位"><span className="feishu-facet-name">即将截止</span></Tooltip>
         <div className="feishu-facet-main"><div className="feishu-facet-options">
@@ -311,11 +307,10 @@ export default function FeishuWorkspace({ isAdmin = false }) {
               <span className="feishu-mobile-deadline"><ClockCircleOutlined /> 截止 {row.deadline?.label || "未填写"}</span>
             </div>
             <div className="feishu-mobile-tags">
-              <Tag color={COLORS[row.annotation.status]}>{row.annotation.status}</Tag>
+              {statusAction(row)}
               {row.fields?.["招聘类型"] && <Tag color="purple">{row.fields["招聘类型"]}</Tag>}
               {row.fields?.["学历"] && <Tag>{row.fields["学历"]}</Tag>}
               {row.fields?.["公司行业"] && <Tag color="cyan" className="feishu-mobile-industry">{row.fields["公司行业"]}</Tag>}
-              {focusAction(row)}
             </div>
           </div>
         </List.Item>} />
@@ -328,7 +323,7 @@ export default function FeishuWorkspace({ isAdmin = false }) {
           onChange={(nextPage) => changePage(nextPage, pageSize)} />
       </div>
     </> : <Table className="feishu-table" rowKey={(row) => `${row.table_id}/${row.record_id}`} dataSource={rows} columns={columns}
-      loading={loading} size="middle" tableLayout="fixed" onChange={onTableChange} scroll={{ x: groupBy ? 1470 : 1352 }}
+      loading={loading} size="middle" tableLayout="fixed" onChange={onTableChange} scroll={{ x: groupBy ? 1380 : 1260 }}
       locale={{ emptyText: <Empty description={deadlineDays ? `未来 ${deadlineDays} 天内没有明确日期的截止职位` : "没有找到符合条件的职位"} /> }}
       pagination={{ current: page, pageSize, total, showSizeChanger: true, showQuickJumper: true, pageSizeOptions: ["10", "20", "30", "50", "100"],
         onChange: changePage,
@@ -337,7 +332,7 @@ export default function FeishuWorkspace({ isAdmin = false }) {
     <Drawer className="feishu-detail-drawer" open={!!selected} onClose={() => { setSelected(null); setDraft(null); }} width={isMobile ? "100%" : 740}
       title={selected ? selected.fields?.["公司名称"] || selected.fields?.["企业名称"] || "职位详情" : "职位详情"}>
       {selected && draft && <>
-        <Space wrap className="feishu-detail-tags"><Tag color={COLORS[draft.status]}>{draft.status === "关注" ? labelForFocus(draft.priority) : draft.status}</Tag>
+        <Space wrap className="feishu-detail-tags"><Tag color={COLORS[draft.status]}>{draft.status}</Tag>
           {selected.fields?.["公司行业"] && <Tag color="cyan">{selected.fields["公司行业"]}</Tag>}
           {selected.fields?.["招聘类型"] && <Tag color="purple">{selected.fields["招聘类型"]}</Tag>}</Space>
         <Title level={5}>招聘岗位</Title><Paragraph className="feishu-position-detail">{display(selected.fields?.["校招岗位"] || selected.fields?.["招聘岗位"] || selected.fields?.["岗位"])}</Paragraph>
@@ -345,17 +340,16 @@ export default function FeishuWorkspace({ isAdmin = false }) {
           {[["网申公告", selected.fields?.["网申公告"]], ["投递链接", selected.fields?.["投递链接"]]].map(([label, value]) => safeHref(value) ?
             <Button key={label} href={safeHref(value)} target="_blank" rel="noopener noreferrer" icon={<ExportOutlined />}>{label}</Button> : null)}
         </Space>
-        <section className="feishu-follow-panel"><Title level={5}>我的投递进度</Title>
-          <div className="feishu-follow-field"><label>进度</label><div className="feishu-follow-options">{STATUSES.map((value) => <Button key={value} type="text" className={draft.status === value ? "selected" : ""}
-            onClick={() => setDraft({ ...draft, status: value, priority: value === "关注" ? draft.priority || 1 : 0 })}>{value}</Button>)}</div></div>
-          {draft.status === "关注" && <div className="feishu-follow-field"><label>关注程度</label><div className="feishu-follow-options">{FOCUS.map(({ value, label }) => <Button key={value} type="text" className={draft.priority === value ? "selected" : ""}
-            onClick={() => setDraft({ ...draft, priority: value })}><StarFilled /> {label}</Button>)}</div></div>}
+        <section className="feishu-follow-panel"><Title level={5}>我的投递流程</Title>
+          <div className="feishu-follow-field"><label>流程</label><div className="feishu-follow-options">{STATUSES.map((value) => <Button key={value} type="text" data-status={value} className={draft.status === value ? "selected" : ""}
+            onClick={() => setDraft({ ...draft, status: value })}>{value}</Button>)}</div></div>
           <div className="feishu-follow-field"><label>标签</label><Input placeholder="用逗号分隔，如内推、有笔试" value={draft.tags} onChange={(event) => setDraft({ ...draft, tags: event.target.value })} /></div>
           <div className="feishu-follow-field"><label>备注</label><Input.TextArea rows={4} placeholder="记录投递渠道、联系人、薪资或下一步" value={draft.note} onChange={(event) => setDraft({ ...draft, note: event.target.value })} /></div>
           <Button type="primary" loading={busy} onClick={() => save()} icon={<CheckCircleOutlined />}>保存跟进</Button>
         </section>
-        <div className="feishu-raw-heading"><Title level={5}>完整资料</Title><Text type="secondary">来自飞书原始表格</Text></div>
-        <Descriptions bordered size="small" column={1} items={Object.entries(selected.fields || {}).map(([key, value]) => ({ key, label: key,
+        <div className="feishu-raw-heading"><Title level={5}>完整资料</Title></div>
+        <Descriptions className="feishu-raw-details" bordered size="small" column={1} items={Object.entries(selected.fields || {}).map(([key, value]) => ({ key,
+          label: <Tooltip title={key}><span className="feishu-field-label">{key}</span></Tooltip>,
           children: safeHref(value) ? <a href={safeHref(value)} target="_blank" rel="noopener noreferrer">打开链接 <ExportOutlined /></a> :
             <span className="feishu-field-value">{display(value)}</span> }))} />
       </>}

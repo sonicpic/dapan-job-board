@@ -104,12 +104,12 @@ def test_job_search_filters_sort_and_annotations_are_admin_only(client):
          patch.object(feishu, 'snapshot', return_value=sample_snapshot(records)):
         assert app.run_feishu_sync()
         path = '/api/admin/feishu/annotations/tbl1/rec-a'
-        assert client.put(path, json={'status': '关注', 'priority': 3, 'tags': ['北京', '后端', '北京'], 'note': '已联系校友'}).status_code == 401
+        assert client.put(path, json={'status': '关注', 'tags': ['北京', '后端', '北京'], 'note': '已联系校友'}).status_code == 401
         assert client.get('/api/admin/feishu/annotations').status_code == 401
         sign_in(client)
         assert client.put(path, json={'status': '无效状态'}).status_code == 422
-        assert client.put('/api/admin/feishu/annotations/tbl1/missing', json={'status': '关注', 'priority': 1}).status_code == 404
-        saved = client.put(path, json={'status': '关注', 'priority': 3, 'tags': ['北京', '后端', '北京'], 'note': '已联系校友'})
+        assert client.put('/api/admin/feishu/annotations/tbl1/missing', json={'status': '关注'}).status_code == 404
+        saved = client.put(path, json={'status': '关注', 'tags': ['北京', '后端', '北京'], 'note': '已联系校友'})
         assert saved.status_code == 200
         assert saved.json()['tags'] == ['北京', '后端']
         assert client.get('/api/admin/feishu/annotations').json()['items'][0]['note'] == '已联系校友'
@@ -121,10 +121,11 @@ def test_job_search_filters_sort_and_annotations_are_admin_only(client):
         assert search({'q': '后端开发'})['total'] == 1
         assert search({'q': '%'})['total'] == 0
         assert search({'industry': '互联网', 'location': '北京', 'education': '本科起', 'exam': '是'})['total'] == 1
-        result = search({'status': '关注', 'priority': 3, 'tag': '北京', 'group_by': 'annotation_status'})
+        result = search({'status': '关注', 'tag': '北京', 'group_by': 'annotation_status'})
         assert result['total'] == 1
         assert result['items'][0]['group_value'] == '关注'
         assert result['items'][0]['annotation']['note'] == '已联系校友'
+        assert 'priority' not in result['items'][0]['annotation']
         assert result['facets']['tags'] == {'北京': 1, '后端': 1}
         assert search({'status': '待筛选'})['items'][0]['record_id'] == 'rec-b'
         assert '星辰科技' not in json.dumps(client.get('/api/public').json(), ensure_ascii=False)
@@ -164,10 +165,19 @@ def test_multiselect_filters_and_true_deadline_sort(client):
         assert set(result['facets']['location']) == {'北京', '深圳'}
         assert set(result['facets']['industry']) == {'互联网', '金融'}
         path = '/api/admin/feishu/annotations/tbl1/rec-late'
-        assert client.put(path, json={'status': '关注', 'priority': 0}).status_code == 422
-        assert client.put(path, json={'status': '关注', 'priority': 3}).status_code == 200
-        result = client.get('/api/admin/feishu/records', params={'focus': 3}).json()
+        assert client.put(path, json={'status': '关注'}).status_code == 200
+        result = client.get('/api/admin/feishu/records', params={'status': '关注'}).json()
         assert [item['record_id'] for item in result['items']] == ['rec-late']
+        with app.conn() as c:
+            c.execute("UPDATE feishu_annotations SET priority=3 WHERE record_id='rec-late'")
+        app.init()
+        with app.conn() as c:
+            assert c.execute("SELECT status,priority FROM feishu_annotations WHERE record_id='rec-late'").fetchone()[:] == ('关注', 0)
+        assert client.put(path, json={'status': '流程终止', 'note': '笔试未通过'}).status_code == 200
+        result = client.get('/api/admin/feishu/records', params={'status': '流程终止'}).json()
+        assert [item['record_id'] for item in result['items']] == ['rec-late']
+        assert result['facets']['annotation_status']['流程终止'] == 1
+        assert 'priority' not in result['items'][0]['annotation']
 
 
 def test_all_facet_options_are_available_and_filter_counts_match(client):
