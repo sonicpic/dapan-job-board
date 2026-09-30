@@ -19,9 +19,10 @@ if [[ "${1:-}" == "--remove" ]]; then
 fi
 
 # WSL mirrored networking exposes both the Clash TUN default route and the
-# physical LAN default route. Select the first gateway outside fake-IP space.
+# physical LAN default route. Interface names can swap across WSL starts, so
+# identify the physical gateway by address rather than excluding an interface.
 physical_default=$(ip -4 route show default | awk '
-  $1 == "default" && $3 !~ /^198\.18\./ && $5 != "eth0" { print; exit }
+  $1 == "default" && $3 !~ /^198\.(18|19)\./ { print; exit }
 ')
 if [[ -z "$physical_default" ]]; then
   echo "No physical IPv4 default route found" >&2
