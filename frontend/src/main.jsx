@@ -39,6 +39,9 @@ import {
   Checkbox,
   Upload,
   Collapse,
+  Dropdown,
+  DatePicker,
+  InputNumber,
 } from "antd";
 import zhCN from "antd/locale/zh_CN";
 import {
@@ -79,6 +82,8 @@ import {
   CopyOutlined,
   SortAscendingOutlined,
   SortDescendingOutlined,
+  UserOutlined,
+  LockOutlined,
 } from "@ant-design/icons";
 import dayjs from "dayjs";
 import ReactMarkdown from "react-markdown";
@@ -234,9 +239,27 @@ function sourceButton(source) {
     </Button>
   );
 }
-function Header({ active = "jobs", onChange, config, admin = false, showInterviews = false }) {
+function Header({ active = "jobs", onChange, config, admin = false, role = "guest" }) {
+  const { message } = AntApp.useApp();
+  const [passwordOpen, setPasswordOpen] = useState(false);
+  const [passwordBusy, setPasswordBusy] = useState(false);
+  const [passwordForm] = Form.useForm();
+  const showInterviews = role === "admin";
+  const showWorkspace = role !== "guest";
+  const navCount = 3 + Number(showInterviews) + Number(showWorkspace);
+  const changeOwnPassword = async (values) => {
+    setPasswordBusy(true);
+    try {
+      await api("/me/password", "PUT", { current: values.current, password: values.password });
+      localStorage.removeItem("job-login");
+      localStorage.removeItem("job-admin-login");
+      message.success("密码已修改，请重新登录");
+      location.href = "/login";
+    } catch (e) { message.error(e.message); }
+    finally { setPasswordBusy(false); }
+  };
   return (
-    <header className="header">
+    <><header className="header">
       <div className="header-inner">
         <a className="brand" href="/" aria-label="大潘的就业情报站首页">
           <span className="brand-mark">
@@ -246,7 +269,7 @@ function Header({ active = "jobs", onChange, config, admin = false, showIntervie
         </a>
         {!admin && (
           <Segmented
-            className="nav-tabs"
+            className={`nav-tabs nav-tabs-${navCount}`}
             value={active}
             onChange={onChange}
             options={[
@@ -258,23 +281,30 @@ function Header({ active = "jobs", onChange, config, admin = false, showIntervie
               },
               { label: "我的收藏", value: "saved", icon: <StarOutlined /> },
               ...(showInterviews ? [{ label: "面试记录", value: "interviews", icon: <AudioOutlined /> }] : []),
-              ...(showInterviews ? [{ label: "飞书职位库", value: "feishu", icon: <BookOutlined /> }] : []),
+              ...(showWorkspace ? [{ label: "职位库", value: "feishu", icon: <BookOutlined /> }] : []),
             ]}
           />
         )}
         <Space className="header-actions">
           {sourceButton(config?.source_url)}
-          <Tooltip title={admin ? "返回招聘信息" : "管理后台"}>
-            <Button
-              type="text"
-              href={admin ? "/" : "/admin"}
-              icon={admin ? <ArrowLeftOutlined /> : <SettingOutlined />}
-              aria-label={admin ? "返回首页" : "管理后台"}
-            />
-          </Tooltip>
+          {admin ? <Button type="text" href="/" icon={<ArrowLeftOutlined />} aria-label="返回首页" />
+            : role === "admin" ? <Tooltip title="设置"><Button type="text" href="/admin" icon={<SettingOutlined />} aria-label="设置" /></Tooltip>
+            : role === "user" ? <Dropdown trigger={["click"]} menu={{ items: [
+              { key: "password", icon: <LockOutlined />, label: "修改密码", onClick: () => setPasswordOpen(true) },
+              { key: "logout", icon: <LogoutOutlined />, label: "退出登录", onClick: async () => { await api("/logout", "POST"); location.href = "/"; } },
+            ] }}><Button type="text" icon={<UserOutlined />} aria-label="个人中心" className="profile-trigger" /></Dropdown>
+            : <Button type="text" href="/login" icon={<UserOutlined />} aria-label="登录">登录</Button>}
         </Space>
       </div>
     </header>
+    <Modal title="修改密码" open={passwordOpen} footer={null} onCancel={() => setPasswordOpen(false)} destroyOnHidden>
+      <Form form={passwordForm} layout="vertical" onFinish={changeOwnPassword}>
+        <Form.Item name="current" label="当前密码" rules={[{ required: true }]}><Input.Password autoComplete="current-password" /></Form.Item>
+        <Form.Item name="password" label="新密码" rules={[{ required: true, min: 12, pattern: /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9\s])\S+$/, message: "至少 12 位，包含大小写字母、数字和符号" }]}><Input.Password autoComplete="new-password" /></Form.Item>
+        <Form.Item name="confirm" label="重复新密码" dependencies={["password"]} rules={[{ required: true }, ({ getFieldValue }) => ({ validator: (_, value) => value === getFieldValue("password") ? Promise.resolve() : Promise.reject(new Error("两次密码不一致")) })]}><Input.Password autoComplete="new-password" /></Form.Item>
+        <Button type="primary" htmlType="submit" loading={passwordBusy} block>保存新密码</Button>
+      </Form>
+    </Modal></>
   );
 }
 
@@ -982,7 +1012,7 @@ function PublicPage() {
     [selected, setSelected] = useState(null),
     [date, setDate] = useState(null),
     [calendar, setCalendar] = useState(false),
-    [isAdmin, setIsAdmin] = useState(false),
+    [role, setRole] = useState("guest"),
     [interviewEdit, setInterviewEdit] = useState(null),
     [saved, setSaved] = useState(() => {
       try {
@@ -1006,13 +1036,13 @@ function PublicPage() {
     const initialize = async () => {
       try {
         const session = await api("/session");
-        setIsAdmin(!!session.admin);
-        if (session.admin) {
-          const bookmarks = await api("/admin/bookmarks");
+        setRole(session.role || "guest");
+        if (session.role && session.role !== "guest") {
+          const bookmarks = await api("/me/bookmarks");
           setSaved(bookmarks.ids || []);
         }
       } catch {
-        setIsAdmin(false);
+        setRole("guest");
       }
       await load();
     };
@@ -1035,9 +1065,9 @@ function PublicPage() {
   }, [data?.config.title]);
   const toggle = async (id) => {
     const removing = saved.includes(id);
-    if (isAdmin) {
+    if (role !== "guest") {
       try {
-        await api(`/admin/bookmarks/${id}`, removing ? "DELETE" : "PUT");
+        await api(`/me/bookmarks/${id}`, removing ? "DELETE" : "PUT");
         setSaved((old) => removing ? old.filter((value) => value !== id) : [...old, id]);
       } catch (e) {
         message.error(e.message);
@@ -1184,15 +1214,15 @@ function PublicPage() {
       message.error(e.message);
     }
   };
-  if (tab === "feishu" && isAdmin) {
+  if (tab === "feishu" && role !== "guest") {
     return <>
-      <Header active={tab} onChange={changeTab} config={configs} showInterviews />
-      <main className="page feishu-page"><FeishuWorkspace /></main>
+      <Header active={tab} onChange={changeTab} config={configs} role={role} />
+      <main className="page feishu-page"><FeishuWorkspace isAdmin={role === "admin"} /></main>
     </>;
   }
   return (
     <>
-      <Header active={tab} onChange={changeTab} config={configs} showInterviews={isAdmin} />
+      <Header active={tab} onChange={changeTab} config={configs} role={role} />
       <main className="page">
         {error && (
           <Alert
@@ -1345,7 +1375,7 @@ function PublicPage() {
                   <Text type="secondary">仅管理员可见</Text>
                 ) : (
                   <Text type="secondary">
-                    {saved.length} 条收藏 · {isAdmin ? "管理员多设备同步" : "仅在本机保存"}
+                    {saved.length} 条收藏 · {role === "guest" ? "仅在本机保存" : "账号内同步"}
                   </Text>
                 )}
                 <Button type="text" onClick={reset}>
@@ -1643,7 +1673,7 @@ function PublicPage() {
         source={configs?.source_url}
         saved={saved.includes(selected?.id)}
         toggle={toggle}
-        isAdmin={isAdmin}
+        isAdmin={role === "admin"}
         onChanged={load}
         onEdit={editInterview}
         onDelete={deleteInterview}
@@ -1697,12 +1727,110 @@ function PublicPage() {
   );
 }
 
+function AuthPage() {
+  const { message } = AntApp.useApp();
+  const [mode, setMode] = useState(location.pathname === "/register" ? "register" : "login");
+  const [busy, setBusy] = useState(false);
+  const [prefill, setPrefill] = useState(null);
+  const remembered = useMemo(() => {
+    try { return JSON.parse(localStorage.getItem("job-login") || localStorage.getItem("job-admin-login") || "null"); }
+    catch { return null; }
+  }, []);
+  const submit = async (values) => {
+    setBusy(true);
+    try {
+      if (mode === "register") {
+        await api("/register", "POST", { username: values.username, password: values.password, confirm: values.confirm, invite_code: values.invite_code });
+        message.success("注册成功，请登录");
+        setPrefill({ username: values.username, password: values.password });
+        setMode("login");
+      } else {
+        const result = await api("/login", "POST", { username: values.username, password: values.password });
+        if (values.remember) localStorage.setItem("job-login", JSON.stringify({ username: values.username, password: values.password }));
+        else localStorage.removeItem("job-login");
+        localStorage.removeItem("job-admin-login");
+        location.href = result.admin ? "/admin" : "/";
+      }
+    } catch (e) { message.error(e.message); }
+    finally { setBusy(false); }
+  };
+  return <>
+    <Header admin />
+    <div className="login-shell"><Card className="login-card">
+      <Avatar size={52} className="login-icon" icon={<UserOutlined />} />
+      <Title level={2}>{mode === "login" ? "登录" : "注册"}</Title>
+      <Form key={mode} layout="vertical" initialValues={mode === "login" ? {
+        username: prefill?.username || remembered?.username || "", password: prefill?.password || remembered?.password || "", remember: !!remembered,
+      } : {}} onFinish={submit}>
+        <Form.Item name="username" label="账号" rules={[{ required: true, message: "请输入账号" }, ...(mode === "register" ? [{ pattern: /^[a-z][a-z0-9_]{2,31}$/, message: "3–32 位小写字母、数字或下划线，且以字母开头" }] : [])]}>
+          <Input autoComplete="username" placeholder="输入账号" />
+        </Form.Item>
+        <Form.Item name="password" label="密码" rules={mode === "register" ? [{ required: true, min: 12, pattern: /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9\s])\S+$/, message: "至少 12 位，包含大小写字母、数字和符号" }] : [{ required: true, message: "请输入密码" }]}>
+          <Input.Password autoComplete={mode === "login" ? "current-password" : "new-password"} placeholder="输入密码" />
+        </Form.Item>
+        {mode === "register" ? <>
+          <Form.Item name="confirm" label="重复密码" dependencies={["password"]} rules={[{ required: true }, ({ getFieldValue }) => ({ validator: (_, value) => value === getFieldValue("password") ? Promise.resolve() : Promise.reject(new Error("两次密码不一致")) })]}>
+            <Input.Password autoComplete="new-password" />
+          </Form.Item>
+          <Form.Item name="invite_code" label="邀请码" rules={[{ required: true, message: "请输入邀请码" }]}><Input autoComplete="off" /></Form.Item>
+        </> : <Form.Item name="remember" valuePropName="checked"><Checkbox>在此设备保存密码</Checkbox></Form.Item>}
+        <Button type="primary" htmlType="submit" block loading={busy} size="large">{mode === "login" ? "登录" : "注册"}</Button>
+      </Form>
+      <div className="login-foot"><Button type="link" onClick={() => setMode(mode === "login" ? "register" : "login")}>
+        {mode === "login" ? "没有账号？使用邀请码注册" : "已有账号？返回登录"}
+      </Button><Link href="/">返回首页</Link></div>
+    </Card></div>
+  </>;
+}
+
+function InviteManager() {
+  const { message } = AntApp.useApp();
+  const [items, setItems] = useState([]);
+  const [code, setCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [form] = Form.useForm();
+  const refresh = async () => {
+    try { setItems((await api("/admin/invites")).items || []); }
+    catch (e) { message.error(e.message); }
+  };
+  useEffect(() => { refresh(); }, []);
+  const create = async (values) => {
+    setBusy(true);
+    try {
+      const result = await api("/admin/invites", "POST", { max_uses: values.max_uses, expires_at: values.expires_at.toISOString() });
+      setCode(result.code);
+      await refresh();
+    } catch (e) { message.error(e.message); }
+    finally { setBusy(false); }
+  };
+  return <>
+    <Title level={4}>邀请码管理</Title>
+    <Form form={form} layout="inline" className="invite-form" initialValues={{ max_uses: 1, expires_at: dayjs().add(7, "day").endOf("day") }} onFinish={create}>
+      <Form.Item name="max_uses" label="可用次数" rules={[{ required: true }]}><InputNumber min={1} max={1000} /></Form.Item>
+      <Form.Item name="expires_at" label="过期时间" rules={[{ required: true }]}><DatePicker showTime format="YYYY-MM-DD HH:mm" disabledDate={(day) => day && day.endOf("day").isBefore(dayjs())} /></Form.Item>
+      <Form.Item><Button type="primary" icon={<PlusOutlined />} htmlType="submit" loading={busy}>创建邀请码</Button></Form.Item>
+    </Form>
+    <Table rowKey="code_hash" size="small" dataSource={items} scroll={{ x: 600 }} pagination={{ pageSize: 10 }} columns={[
+      { title: "邀请码", dataIndex: "code_prefix", render: (value) => `${value}…` },
+      { title: "使用情况", render: (_, row) => `${row.used_count} / ${row.max_uses}` },
+      { title: "过期时间", dataIndex: "expires_at", render: (value) => dayjs.unix(value).format("YYYY-MM-DD HH:mm") },
+      { title: "状态", render: (_, row) => <Tag color={row.used_count >= row.max_uses || row.expires_at <= Date.now() / 1000 ? "default" : "green"}>{row.used_count >= row.max_uses ? "已用尽" : row.expires_at <= Date.now() / 1000 ? "已过期" : "可使用"}</Tag> },
+      { title: "操作", render: (_, row) => <Popconfirm title="删除这个邀请码？" onConfirm={async () => { try { await api(`/admin/invites/${row.code_hash}`, "DELETE"); await refresh(); } catch (e) { message.error(e.message); } }}><Button danger type="text" icon={<DeleteOutlined />}>删除</Button></Popconfirm> },
+    ]} />
+    <Modal title="邀请码已创建" open={!!code} onCancel={() => setCode("")} onOk={() => setCode("")} okText="完成" cancelButtonProps={{ style: { display: "none" } }}>
+      <Paragraph>请立即复制并妥善保存。关闭后无法再次查看完整邀请码。</Paragraph>
+      <Input readOnly value={code} addonAfter={<Button type="text" icon={<CopyOutlined />} onClick={async () => { await copyText(code); message.success("已复制"); }}>复制</Button>} />
+    </Modal>
+  </>;
+}
+
 function AdminPage() {
   const { message } = AntApp.useApp();
   const screens = Grid.useBreakpoint();
   const [data, setData] = useState(null),
     [loading, setLoading] = useState(true),
     [unauthorized, setUnauthorized] = useState(false),
+    [forbidden, setForbidden] = useState(false),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false),
     [kind, setKind] = useState("job"),
@@ -1712,16 +1840,7 @@ function AdminPage() {
     [edit, setEdit] = useState(null),
     [recordingEvent, setRecordingEvent] = useState(null),
     [editInitial, setEditInitial] = useState({});
-  const savedAdminLogin = useMemo(() => {
-    try {
-      const saved = JSON.parse(localStorage.getItem("job-admin-login") || "null");
-      return saved?.username && saved?.password ? saved : null;
-    } catch {
-      return null;
-    }
-  }, []);
-  const [loginForm] = Form.useForm(),
-    [editForm] = Form.useForm(),
+  const [editForm] = Form.useForm(),
     [settingsForm] = Form.useForm(),
     [passwordForm] = Form.useForm();
   const load = async () => {
@@ -1729,10 +1848,14 @@ function AdminPage() {
       const d = await api("/admin");
       setData(d);
       setUnauthorized(false);
+      setForbidden(false);
       setError("");
     } catch (e) {
       if (e.status === 401) {
         setUnauthorized(true);
+        setData(null);
+      } else if (e.status === 403) {
+        setForbidden(true);
         setData(null);
       } else setError(e.message);
     } finally {
@@ -1802,81 +1925,8 @@ function AdminPage() {
         </main>
       </>
     );
-  if (unauthorized)
-    return (
-      <>
-        <Header admin />
-        <div className="login-shell">
-          <Card className="login-card">
-            <Avatar
-              size={52}
-              className="login-icon"
-              icon={<SafetyCertificateOutlined />}
-            />
-            <Title level={2}>管理控制台</Title>
-            <Form
-              form={loginForm}
-              layout="vertical"
-              initialValues={{
-                username: savedAdminLogin?.username || "admin",
-                password: savedAdminLogin?.password || "",
-                remember: !!savedAdminLogin,
-              }}
-              onFinish={async (values) => {
-                setBusy(true);
-                try {
-                  const { remember, ...credentials } = values;
-                  await api("/login", "POST", credentials);
-                  if (remember) {
-                    localStorage.setItem("job-admin-login", JSON.stringify(credentials));
-                  } else {
-                    localStorage.removeItem("job-admin-login");
-                  }
-                  await load();
-                } catch (e) {
-                  message.error(e.message);
-                } finally {
-                  setBusy(false);
-                }
-              }}
-            >
-              <Form.Item
-                label="管理员账号"
-                name="username"
-                rules={[{ required: true, message: "请输入账号" }]}
-              >
-                <Input autoComplete="username" placeholder="管理员账号" />
-              </Form.Item>
-              <Form.Item
-                label="密码"
-                name="password"
-                rules={[{ required: true, message: "请输入密码" }]}
-              >
-                <Input.Password
-                  autoComplete="current-password"
-                  placeholder="输入管理密码"
-                />
-              </Form.Item>
-              <Form.Item name="remember" valuePropName="checked">
-                <Checkbox>在此设备保存管理员密码</Checkbox>
-              </Form.Item>
-              <Button
-                type="primary"
-                htmlType="submit"
-                block
-                loading={busy}
-                size="large"
-              >
-                登录管理后台 <ArrowRightOutlined />
-              </Button>
-            </Form>
-            <div className="login-foot">
-              <Link href="/">返回招聘信息</Link>
-            </div>
-          </Card>
-        </div>
-      </>
-    );
+  if (unauthorized) return <AuthPage />;
+  if (forbidden) return <Result status="403" title="仅管理员可访问" extra={<Button href="/">返回首页</Button>} />;
   if (!data)
     return (
       <Result
@@ -2525,13 +2575,25 @@ function AdminPage() {
                         },
                       ]}
                     />
+                    <Divider />
+                    <div className="admin-toolbar">
+                      <div><Title level={4}>飞书职位库同步</Title><Text type="secondary">每 {data.feishu_status.interval_minutes} 分钟同步公共职位数据，个人跟进信息独立保存。</Text></div>
+                      <Button icon={<SyncOutlined />} loading={data.feishu_status.running || busy} onClick={() => act(() => api("/admin/feishu/sync", "POST"), "飞书同步任务已启动")}>立即同步</Button>
+                    </div>
+                    <Descriptions column={1} items={[
+                      { key: "records", label: "当前记录", children: `${data.feishu_status.records.toLocaleString()} 条` },
+                      { key: "last", label: "最近同步", children: data.feishu_status.last_run?.finished ? `${fmt(data.feishu_status.last_run.finished, "YYYY-MM-DD HH:mm")} · ${data.feishu_status.last_run.status === "success" ? "成功" : "失败"}` : "暂无" },
+                    ]} />
+                    <Divider />
+                    <Title level={5}>同步记录</Title>
                     <Table
-                      rowKey="id"
+                      rowKey="key"
                       size="small"
-                      dataSource={data.logs}
+                      dataSource={[...data.logs.map((row) => ({ ...row, key: `k-${row.id}`, source: "金山文档" })), ...data.feishu_logs.map((row) => ({ ...row, key: `f-${row.id}`, source: "飞书职位库" }))].sort((a, b) => b.started.localeCompare(a.started))}
                       scroll={{ x: 680 }}
                       pagination={{ pageSize: 10, showSizeChanger: false }}
                       columns={[
+                        { title: "来源", dataIndex: "source", width: 110 },
                         {
                           title: "时间",
                           dataIndex: "started",
@@ -2560,9 +2622,7 @@ function AdminPage() {
                             </Tag>
                           ),
                         },
-                        { title: "招聘", dataIndex: "jobs" },
-                        { title: "宣讲会", dataIndex: "events" },
-                        { title: "变化", dataIndex: "changed" },
+                        { title: "数据", render: (_, row) => row.source === "金山文档" ? `${row.jobs ?? "—"} 招聘 · ${row.events ?? "—"} 宣讲 · ${row.changed ?? "—"} 变化` : `${row.records ?? "—"} 职位` },
                         { title: "说明", dataIndex: "message", width: 270 },
                       ]}
                     />
@@ -2641,6 +2701,11 @@ function AdminPage() {
                     </Card>
                   </>
                 ),
+              },
+              {
+                key: "invites",
+                label: <Space><UserOutlined />用户邀请</Space>,
+                children: <InviteManager />,
               },
               {
                 key: "settings",
@@ -2724,6 +2789,7 @@ function AdminPage() {
                               password: values.password,
                             });
                             localStorage.removeItem("job-admin-login");
+                            localStorage.removeItem("job-login");
                           },
                           "密码已修改，请重新登录",
                         )
@@ -2902,7 +2968,9 @@ createRoot(document.getElementById("root")).render(
   <ConfigProvider locale={zhCN} theme={theme}>
     <AntApp>
       <ErrorBoundary>
-        {location.pathname.startsWith("/admin") ? (
+        {location.pathname === "/login" || location.pathname === "/register" ? (
+          <AuthPage />
+        ) : location.pathname.startsWith("/admin") ? (
           <AdminPage />
         ) : (
           <PublicPage />

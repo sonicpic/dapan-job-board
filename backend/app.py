@@ -115,9 +115,15 @@ def init():
         CREATE TABLE IF NOT EXISTS overrides(id TEXT PRIMARY KEY,data TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS deleted_records(id TEXT PRIMARY KEY,source TEXT,source_key TEXT,deleted_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS sync_logs(id INTEGER PRIMARY KEY AUTOINCREMENT,started TEXT,finished TEXT,status TEXT,jobs INTEGER,events INTEGER,changed INTEGER,message TEXT);
-        CREATE TABLE IF NOT EXISTS users(username TEXT PRIMARY KEY,password TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS users(username TEXT PRIMARY KEY,password TEXT NOT NULL,role TEXT NOT NULL DEFAULT 'admin');
         CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY,username TEXT NOT NULL,expires REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS login_attempts(ip TEXT,at REAL);
+        CREATE TABLE IF NOT EXISTS registration_attempts(ip TEXT,at REAL);
+        CREATE TABLE IF NOT EXISTS invites(
+          code_hash TEXT PRIMARY KEY,code_prefix TEXT NOT NULL,max_uses INTEGER NOT NULL,
+          used_count INTEGER NOT NULL DEFAULT 0,expires_at REAL NOT NULL,
+          created_at TEXT NOT NULL,created_by TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY AUTOINCREMENT,at TEXT,action TEXT,record_id TEXT);
         CREATE TABLE IF NOT EXISTS company_reviews(
           company TEXT PRIMARY KEY,
@@ -258,13 +264,16 @@ def init():
         if 'deadline_sort' not in search_columns:
             c.execute("ALTER TABLE feishu_record_search ADD COLUMN deadline_sort TEXT NOT NULL DEFAULT ''")
         c.execute('CREATE INDEX IF NOT EXISTS idx_feishu_search_deadline ON feishu_record_search(base_token,deadline_sort)')
+        user_columns = {row['name'] for row in c.execute('PRAGMA table_info(users)')}
+        if 'role' not in user_columns:
+            c.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'admin'")
         c.execute("UPDATE sync_logs SET status='error',finished=?,message='服务重新启动，同步将重试' WHERE status='running'", (now(),))
         c.execute("UPDATE company_reviews SET status='queued',error='服务重新启动，分析将重试' WHERE status='running'")
         c.execute("UPDATE event_recordings SET status='queued',error='服务重新启动，录音处理将重试' WHERE status IN ('transcribing','summarizing')")
         c.execute("UPDATE feishu_sync_runs SET status='error',finished=?,message='服务重新启动，同步未完成；旧数据已保留' WHERE status='running'", (now(),))
         if not c.execute('SELECT 1 FROM users').fetchone():
             password = os.getenv('ADMIN_PASSWORD') or secrets.token_urlsafe(24)
-            c.execute('INSERT INTO users VALUES (?,?)', ('admin', hash_pw(password)))
+            c.execute('INSERT INTO users(username,password,role) VALUES (?,?,?)', ('admin', hash_pw(password), 'admin'))
             credentials = DATA / 'initial-admin.txt'
             credentials.write_text('管理地址：' + ORIGIN + '/admin\n用户名：admin\n初始密码：' + password + '\n登录后请在安全设置中修改密码。\n')
             credentials.chmod(0o600)
@@ -889,14 +898,30 @@ async def policy(request, call_next):
     return response
 
 
-def admin(request):
+def current_user(request):
     token = request.cookies.get('job_session', '')
     with conn() as c:
-        session = c.execute('SELECT * FROM sessions WHERE token=? AND expires>?',
+        session = c.execute('''SELECT s.username,u.role FROM sessions s
+                             JOIN users u ON u.username=s.username
+                             WHERE s.token=? AND s.expires>?''',
                             (hashlib.sha256(token.encode()).hexdigest(), time.time())).fetchone()
     if not session:
-        raise HTTPException(401, '请先登录管理后台')
-    return session['username']
+        raise HTTPException(401, '请先登录')
+    return dict(session)
+
+
+def admin(request):
+    user = current_user(request)
+    if user['role'] != 'admin':
+        raise HTTPException(403, '需要管理员权限')
+    return user['username']
+
+
+def workspace_user(request):
+    # Keep legacy admin URLs admin-only; the shared workspace uses its own routes.
+    if request.url.path.startswith('/api/admin/'):
+        return admin(request)
+    return current_user(request)['username']
 
 
 def recording_dict(row, detail=False):
@@ -1000,15 +1025,16 @@ def public(request: Request):
 @app.get('/api/session')
 def session(request: Request):
     try:
-        username = admin(request)
+        user = current_user(request)
     except HTTPException:
-        return {'admin': False}
-    return {'admin': True, 'username': username}
+        return {'admin': False, 'role': 'guest'}
+    return {'admin': user['role'] == 'admin', **user}
 
 
+@app.get('/api/me/bookmarks')
 @app.get('/api/admin/bookmarks')
 def get_admin_bookmarks(request: Request):
-    username = admin(request)
+    username = workspace_user(request)
     with conn() as c:
         ids = [row['record_id'] for row in c.execute(
             'SELECT record_id FROM admin_bookmarks WHERE username=? ORDER BY created_at', (username,)
@@ -1016,19 +1042,27 @@ def get_admin_bookmarks(request: Request):
     return {'ids': ids}
 
 
+@app.put('/api/me/bookmarks/{record_id}')
 @app.put('/api/admin/bookmarks/{record_id}')
 def add_admin_bookmark(record_id: str, request: Request):
-    username = admin(request)
+    username = workspace_user(request)
     with conn() as c:
-        if not c.execute('SELECT 1 FROM records WHERE id=? AND present=1', (record_id,)).fetchone():
+        record = c.execute('SELECT data FROM records WHERE id=? AND present=1', (record_id,)).fetchone()
+        if not record:
             raise HTTPException(404, '信息不存在')
+        # Personal bookmarks must not reveal private or archived records to normal users.
+        if current_user(request)['role'] != 'admin':
+            visible = next((item for item in effective() if item['id'] == record_id), None)
+            if not visible:
+                raise HTTPException(404, '信息不存在')
         c.execute('INSERT OR IGNORE INTO admin_bookmarks VALUES(?,?,?)', (username, record_id, now()))
     return {'ok': True}
 
 
+@app.delete('/api/me/bookmarks/{record_id}')
 @app.delete('/api/admin/bookmarks/{record_id}')
 def delete_admin_bookmark(record_id: str, request: Request):
-    username = admin(request)
+    username = workspace_user(request)
     with conn() as c:
         c.execute('DELETE FROM admin_bookmarks WHERE username=? AND record_id=?', (username, record_id))
     return {'ok': True}
@@ -1039,6 +1073,101 @@ class Login(BaseModel):
     password: str = Field(max_length=256)
 
 
+def strong_password(value):
+    return (12 <= len(value) <= 256 and re.search(r'[a-z]', value) and
+            re.search(r'[A-Z]', value) and re.search(r'[0-9]', value) and
+            re.search(r'[^A-Za-z0-9\s]', value) and not any(ch.isspace() for ch in value))
+
+
+class Registration(BaseModel):
+    username: str = Field(min_length=3, max_length=32)
+    password: str = Field(min_length=12, max_length=256)
+    confirm: str = Field(min_length=12, max_length=256)
+    invite_code: str = Field(min_length=12, max_length=128)
+
+
+@app.post('/api/register')
+def register(body: Registration, request: Request):
+    username = body.username.strip().lower()
+    if not re.fullmatch(r'[a-z][a-z0-9_]{2,31}', username):
+        raise HTTPException(422, '账号须为 3–32 位小写字母、数字或下划线，且以字母开头')
+    if body.password != body.confirm:
+        raise HTTPException(422, '两次密码不一致')
+    if not strong_password(body.password):
+        raise HTTPException(422, '密码至少 12 位，须包含大写字母、小写字母、数字和符号，且不能有空格')
+    ip = request.headers.get('x-real-ip') or request.client.host
+    code_hash = hashlib.sha256(body.invite_code.strip().encode()).hexdigest()
+    with conn() as c:
+        c.execute('BEGIN IMMEDIATE')
+        c.execute('DELETE FROM registration_attempts WHERE at<?', (time.time() - 900,))
+        if c.execute('SELECT count(*) FROM registration_attempts WHERE ip=?', (ip,)).fetchone()[0] >= 10:
+            raise HTTPException(429, '注册尝试过多，请 15 分钟后重试')
+        available = c.execute('''SELECT 1 FROM invites WHERE code_hash=?
+                                 AND used_count<max_uses AND expires_at>?''', (code_hash, time.time())).fetchone()
+        if not available:
+            c.execute('INSERT INTO registration_attempts VALUES(?,?)', (ip, time.time()))
+            return_registration_error = True
+        else:
+            if c.execute('SELECT 1 FROM users WHERE username=?', (username,)).fetchone():
+                raise HTTPException(409, '账号已存在')
+            return_registration_error = False
+            c.execute('UPDATE invites SET used_count=used_count+1 WHERE code_hash=?', (code_hash,))
+            c.execute('INSERT INTO users(username,password,role) VALUES(?,?,?)',
+                      (username, hash_pw(body.password), 'user'))
+            c.execute('DELETE FROM registration_attempts WHERE ip=?', (ip,))
+            audit(c, '邀请码注册', username)
+    if return_registration_error:
+        raise HTTPException(400, '邀请码无效、已用尽或已过期')
+    return {'ok': True, 'username': username}
+
+
+class InviteCreate(BaseModel):
+    max_uses: int = Field(ge=1, le=1000)
+    expires_at: str = Field(min_length=10, max_length=40)
+
+
+@app.get('/api/admin/invites')
+def list_invites(request: Request):
+    admin(request)
+    with conn() as c:
+        rows = [dict(row) for row in c.execute('''SELECT code_hash,code_prefix,max_uses,used_count,
+                 expires_at,created_at,created_by FROM invites ORDER BY created_at DESC''')]
+    return {'items': rows}
+
+
+@app.post('/api/admin/invites')
+def create_invite(body: InviteCreate, request: Request):
+    username = admin(request)
+    try:
+        expires = dt.datetime.fromisoformat(body.expires_at.replace('Z', '+00:00'))
+        if expires.tzinfo is None:
+            raise ValueError('missing timezone')
+        expires_at = expires.timestamp()
+    except ValueError:
+        raise HTTPException(422, '请输入包含时区的有效过期时间')
+    if expires_at <= time.time():
+        raise HTTPException(422, '过期时间必须晚于当前时间')
+    code = secrets.token_urlsafe(24)
+    code_hash = hashlib.sha256(code.encode()).hexdigest()
+    with conn() as c:
+        c.execute('INSERT INTO invites VALUES(?,?,?,?,?,?,?)',
+                  (code_hash, code[:8], body.max_uses, 0, expires_at, now(), username))
+        audit(c, '创建邀请码', code[:8])
+    return {'code': code, 'code_hash': code_hash, 'max_uses': body.max_uses, 'expires_at': expires_at}
+
+
+@app.delete('/api/admin/invites/{code_hash}')
+def delete_invite(code_hash: str, request: Request):
+    admin(request)
+    if not re.fullmatch(r'[0-9a-f]{64}', code_hash):
+        raise HTTPException(404, '邀请码不存在')
+    with conn() as c:
+        if not c.execute('DELETE FROM invites WHERE code_hash=?', (code_hash,)).rowcount:
+            raise HTTPException(404, '邀请码不存在')
+        audit(c, '删除邀请码', code_hash[:8])
+    return {'ok': True}
+
+
 @app.post('/api/login')
 def login(body: Login, request: Request, response: Response):
     ip = request.headers.get('x-real-ip') or request.client.host
@@ -1046,7 +1175,8 @@ def login(body: Login, request: Request, response: Response):
         c.execute('DELETE FROM login_attempts WHERE at<?', (time.time() - 900,))
         if c.execute('SELECT count(*) FROM login_attempts WHERE ip=?', (ip,)).fetchone()[0] >= 10:
             raise HTTPException(429, '尝试次数过多，请 15 分钟后重试')
-        row = c.execute('SELECT password FROM users WHERE username=?', (body.username,)).fetchone()
+        username = body.username.strip().lower()
+        row = c.execute('SELECT password,role FROM users WHERE username=?', (username,)).fetchone()
         if row:
             valid = check_pw(body.password, row['password'])
         else:
@@ -1060,10 +1190,10 @@ def login(body: Login, request: Request, response: Response):
         c.execute('DELETE FROM login_attempts WHERE ip=?', (ip,))
         token = secrets.token_urlsafe(40)
         c.execute('DELETE FROM sessions WHERE expires<?', (time.time(),))
-        c.execute('INSERT INTO sessions VALUES(?,?,?)', (hashlib.sha256(token.encode()).hexdigest(), body.username, time.time() + 28800))
-        audit(c, '管理员登录')
+        c.execute('INSERT INTO sessions VALUES(?,?,?)', (hashlib.sha256(token.encode()).hexdigest(), username, time.time() + 28800))
+        audit(c, '用户登录', username)
     response.set_cookie('job_session', token, httponly=True, secure=secure_request(request), samesite='strict', max_age=28800, path='/')
-    return {'username': body.username}
+    return {'username': username, 'role': row['role'], 'admin': row['role'] == 'admin'}
 
 
 @app.post('/api/logout')
@@ -1080,6 +1210,7 @@ def dashboard(request: Request):
     cfg = settings()
     with conn() as c:
         logs = [dict(r) for r in c.execute('SELECT * FROM sync_logs ORDER BY id DESC LIMIT 100')]
+        feishu_logs = [dict(r) for r in c.execute('SELECT * FROM feishu_sync_runs ORDER BY id DESC LIMIT 30')]
         audits = [dict(r) for r in c.execute('SELECT * FROM audit ORDER BY id DESC LIMIT 50')]
         stored_reviews = {r['company']: review_dict(r, True) for r in c.execute('SELECT * FROM company_reviews')}
     records = effective(include_invisible=True, include_admin_recordings=True,
@@ -1092,6 +1223,7 @@ def dashboard(request: Request):
                for company in companies]
     return {'username': username, 'records': records, 'config': {k: cfg[k] for k in DEFAULTS},
             'logs': logs, 'audit': audits, 'last_error': cfg.get('last_error'), 'sync_running': sync_lock.locked(),
+            'feishu_status': feishu_status_payload(), 'feishu_logs': feishu_logs,
             'reviews': reviews, 'review_config': review.config(), 'review_running': review_lock.locked(),
             'pushplus': pushplus_status(cfg), 'recording_config': recording.config(),
             'recording_running': recording_lock.locked()}
@@ -1146,9 +1278,10 @@ def feishu_sync(request: Request):
     return {'ok': True}
 
 
+@app.get('/api/workspace/manifest')
 @app.get('/api/admin/feishu/manifest')
 def feishu_manifest(request: Request):
-    admin(request)
+    workspace_user(request)
     base = feishu.target_config()['base_token']
     with conn() as c:
         tables = [dict(r) for r in c.execute(
@@ -1166,6 +1299,7 @@ def feishu_manifest(request: Request):
     return {'base_token': base, 'tables': tables, 'status': feishu_status_payload()}
 
 
+@app.get('/api/workspace/records')
 @app.get('/api/admin/feishu/records')
 def feishu_records(request: Request, table_id: str = '', q: str = '', limit: int = 100, offset: int = 0,
                    status: list[str] = Query(default=[]), priority: int = -1,
@@ -1175,7 +1309,7 @@ def feishu_records(request: Request, table_id: str = '', q: str = '', limit: int
                    tag: list[str] = Query(default=[]), sort: str = 'updated_date', direction: str = 'desc',
                    group_by: str = '', focus: list[int] = Query(default=[]),
                    deadline_days: int = Query(default=0, ge=0, le=365)):
-    username = admin(request)
+    username = workspace_user(request)
     ensure_feishu_search_index()
     limit = max(1, min(limit, 500)); offset = max(0, offset)
     base = feishu.target_config()['base_token']
@@ -1299,9 +1433,10 @@ class FeishuAnnotationUpdate(BaseModel):
 FEISHU_STATUSES = {'待筛选', '关注', '已投递', '笔试', '面试', 'Offer', '暂不考虑'}
 
 
+@app.get('/api/workspace/annotations')
 @app.get('/api/admin/feishu/annotations')
 def feishu_annotations(request: Request):
-    username = admin(request); base = feishu.target_config()['base_token']
+    username = workspace_user(request); base = feishu.target_config()['base_token']
     with conn() as c:
         rows = c.execute('SELECT table_id,record_id,status,priority,tags,note,updated_at FROM feishu_annotations WHERE username=? AND base_token=?', (username, base)).fetchall()
     result = []
@@ -1313,9 +1448,10 @@ def feishu_annotations(request: Request):
     return {'items': result}
 
 
+@app.put('/api/workspace/annotations/{table_id}/{record_id}')
 @app.put('/api/admin/feishu/annotations/{table_id}/{record_id}')
 def update_feishu_annotation(table_id: str, record_id: str, body: FeishuAnnotationUpdate, request: Request):
-    username = admin(request); base = feishu.target_config()['base_token']
+    username = workspace_user(request); base = feishu.target_config()['base_token']
     if body.status.strip() not in FEISHU_STATUSES:
         raise HTTPException(422, '无效的跟进状态')
     if body.status.strip() == '关注' and body.priority == 0:
@@ -1787,19 +1923,30 @@ class PasswordUpdate(BaseModel):
     password: str = Field(min_length=12, max_length=256)
 
 
-@app.put('/api/admin/password')
-def change_password(body: PasswordUpdate, request: Request, response: Response):
-    username = admin(request)
+def update_own_password(body: PasswordUpdate, request: Request, response: Response, username: str, require_strong=False):
+    if require_strong and not strong_password(body.password):
+        raise HTTPException(422, '密码至少 12 位，须包含大写字母、小写字母、数字和符号，且不能有空格')
     with conn() as c:
         old = c.execute('SELECT password FROM users WHERE username=?', (username,)).fetchone()['password']
         if not check_pw(body.current, old):
             raise HTTPException(400, '当前密码不正确')
         c.execute('UPDATE users SET password=? WHERE username=?', (hash_pw(body.password), username))
         c.execute('DELETE FROM sessions WHERE username=?', (username,))
-        audit(c, '修改管理员密码')
-    (DATA / 'initial-admin.txt').unlink(missing_ok=True)
+        audit(c, '修改密码', username)
+    if username == 'admin':
+        (DATA / 'initial-admin.txt').unlink(missing_ok=True)
     response.delete_cookie('job_session', path='/', secure=secure_request(request), httponly=True, samesite='strict')
     return {'ok': True}
+
+
+@app.put('/api/me/password')
+def change_my_password(body: PasswordUpdate, request: Request, response: Response):
+    return update_own_password(body, request, response, current_user(request)['username'], require_strong=True)
+
+
+@app.put('/api/admin/password')
+def change_password(body: PasswordUpdate, request: Request, response: Response):
+    return update_own_password(body, request, response, admin(request))
 
 
 DIST = Path(os.getenv('DIST_DIR', '/app/frontend/dist'))
@@ -1814,5 +1961,7 @@ def favicon():
 
 @app.api_route('/', methods=['GET', 'HEAD'])
 @app.api_route('/admin', methods=['GET', 'HEAD'])
+@app.api_route('/login', methods=['GET', 'HEAD'])
+@app.api_route('/register', methods=['GET', 'HEAD'])
 def index():
     return FileResponse(DIST / 'index.html', headers={'Cache-Control': 'no-cache'})

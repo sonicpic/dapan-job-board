@@ -96,7 +96,7 @@ def test_links():
 
 
 def test_auth_and_origin(client):
-    assert client.get('/api/session').json() == {'admin': False}
+    assert client.get('/api/session').json() == {'admin': False, 'role': 'guest'}
     assert client.get('/api/admin').status_code == 401
     assert client.post('/api/admin/sync').status_code == 401
     assert client.post('/api/login',json={'username':'admin','password':'incorrect'}).status_code == 401

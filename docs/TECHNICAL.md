@@ -2,7 +2,7 @@
 
 ## 1. 项目概览
 
-这是一个校园招聘、宣讲会和管理员面试记录站。系统每 15 分钟读取一次公开的金山文档，将数据整理后提供检索、筛选、详情展示和后台管理；同时可调用带联网搜索能力的大模型生成企业网评摘要，也可处理宣讲会与面试录音。
+这是一个校园招聘、宣讲会、职位库和管理员面试记录站。系统每 15 分钟读取一次公开的金山文档，并每小时同步飞书职位库。系统提供检索、筛选、个人跟进及后台管理；同时可调用带联网搜索能力的大模型生成企业网评摘要，也可处理宣讲会与面试录音。
 
 ```mermaid
 flowchart LR
@@ -58,7 +58,7 @@ FastAPI 启动后运行后台线程，每 900 秒检查“招聘信息”和“�
 
 API 密钥只保存在部署目录下的私有 `.env`，不写入数据库、前端文件或 Git。
 
-管理员收藏保存在 SQLite 的 `admin_bookmarks` 表中，并按管理员账号同步到各登录设备；访客收藏仍只保存在浏览器 `localStorage` 中。
+已登录用户的收藏保存在 SQLite 的 `admin_bookmarks` 表中，并以 `username` 为隔离键同步到各登录设备；访客收藏仍只保存在浏览器 `localStorage` 中。飞书原始记录与检索索引为所有已登录用户共用，`feishu_annotations` 则以 `username, base_token, table_id, record_id` 作为复合主键，隔离跟进状态、关注程度、标签与备注。
 
 ### 宣讲会与面试录音处理
 
@@ -68,11 +68,13 @@ API 密钥只保存在部署目录下的私有 `.env`，不写入数据库、前
 
 ## 5. 后台与安全
 
-管理后台支持记录增删改、访客可见、归档、置顶、数据同步、网评队列、录音处理、站点设置和密码修改。管理员登录后，公共页面会额外取得未归档的访客不可见记录和面试记录；未登录请求永远取不到这些内容。管理员密码使用 scrypt 哈希保存；会话 Cookie 使用 HttpOnly、SameSite，HTTPS 入口额外启用 Secure。后台写请求校验来源与自定义请求头，登录接口在应用层和 Nginx 层均有限流。
+系统分为访客、普通用户和管理员。访客只取得访客可见的招聘与宣讲记录；普通用户还能读取公共职位库，使用按账号隔离的收藏和职位跟进数据；管理员额外取得隐藏记录与面试记录，并可进入管理后台。`/api/admin/*` 在后端逐个校验管理员角色，职位库与个人收藏使用独立的已登录接口。管理后台支持记录增删改、访客可见、归档、置顶、金山与飞书同步、网评队列、录音处理、邀请码和站点设置。
+
+注册要求管理员生成邀请码并设置使用次数、过期时间。数据库只保存邀请码 SHA-256 哈希，完整邀请码仅在创建响应中返回一次；注册在 SQLite 写事务中检查邀请码并扣减次数，创建普通用户账号。注册密码至少 12 位，含大小写字母、数字和符号。密码使用 scrypt 哈希保存；会话 Cookie 使用 HttpOnly、SameSite，HTTPS 入口额外启用 Secure。写请求校验来源与自定义请求头；登录和注册在应用层限流。
 
 后台可启用或暂停 PushPlus。每次同步只比较新增宣讲会，推送内容仅包含企业名称和时间；Token 通过服务器 `.env` 的 `PUSHPLUS_TOKEN` 注入，管理页面只显示配置状态、最近结果并支持发送测试消息。
 
-登录页可在私人固定设备上保存管理员账号和密码。该信息仅保存在当前浏览器的本地存储中，取消勾选或成功修改管理员密码后会清除。
+登录页可在可信设备上保存账号和密码。该信息仅保存在当前浏览器的本地存储中，取消勾选或成功修改密码后会清除。
 
 容器以非 root 用户运行，根文件系统只读，仅挂载 `data` 目录用于持久化。应用只监听服务器本机的 `127.0.0.1:${HOST_PORT}`，默认端口为 `18080`，由入口反向代理对外提供服务。
 
@@ -88,7 +90,7 @@ API 密钥只保存在部署目录下的私有 `.env`，不写入数据库、前
 常用运维命令：
 
 ```bash
-cd /home/zhihongpan/services/dapan-job-board
+cd /path/to/dapan-job-board
 docker compose up -d --build
 docker compose ps
 docker compose logs --tail=100 app
@@ -98,16 +100,16 @@ curl -fsS "http://127.0.0.1:${HOST_PORT:-18080}/api/health"
 前端构建与后端测试：
 
 ```bash
-cd /home/zhihongpan/services/dapan-job-board/frontend
+cd /path/to/dapan-job-board/frontend
 npm run build
 
-cd /home/zhihongpan/services/dapan-job-board
+cd /path/to/dapan-job-board
 .venv/bin/pytest tests -q
 ```
 
 SQLite 每日生成一致性备份并保留最近 14 份，备份目录为项目下的 `backups`。备份脚本默认从自身位置识别项目根目录，也可通过 `JOB_BOARD_ROOT` 指定。
 
-当前 WSL 部署位于 `/home/zhihongpan/services/dapan-job-board`，使用 `127.0.0.1:58112`。由于 Clash TUN 的 fake-IP 对 Docker bridge 只有部分目标可达，生产运行叠加 `compose.wsl.yaml` 使用 host 网络，并把 Uvicorn 明确限制在 WSL 回环地址。独立的 systemd 路由单元按应用 UID 10001 动态识别物理 IPv4 网关，让容器使用公共 DNS 并绕过 Clash 代理节点；其他 WSL 程序继续遵循 Clash。`deploy/systemd` 保存开机启动、直连路由与每日备份单元，`deploy/nginx/job.dapanclaw.top.conf` 保存 AWS 入口反代模板。Windows 计划任务 `Dapan Job Board WSL Startup` 在用户登录时启动 Ubuntu，使 WSL systemd 接着拉起 Compose；源腾讯云容器保持停止，作为迁移后的短期回滚副本。
+在 WSL 镜像网络与 TUN 代理同时使用的环境中，可叠加 `compose.wsl.yaml` 采用 host 网络，并把 Uvicorn 限制在回环地址。`deploy/systemd` 中的路由单元按应用 UID 10001 选择物理 IPv4 网关，避免容器出口经由 TUN；脚本按网关地址识别物理网络，不依赖固定的网卡名称。该目录还提供容器启动与每日备份单元，`deploy/nginx/job.dapanclaw.top.conf` 提供入口反代模板。
 
 ## 7. 维护注意事项
 

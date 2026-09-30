@@ -5,12 +5,11 @@
 - 网站：https://job.dapanclaw.top/
 - 管理后台：https://job.dapanclaw.top/admin
 - 数据源：https://www.kdocs.cn/l/REPLACE_ME
-- 运行主机：本机 WSL Ubuntu，项目目录：`/home/zhihongpan/services/dapan-job-board`
-- 入口服务器：AWS `43.213.3.74`，由 FRPS `58112` 转发到 WSL
+- 部署方式：Docker Compose，可通过 Nginx 与 FRP 提供外部访问
 
 ## 功能
 
-招聘信息支持关键词、城市、学历、单位类型及状态筛选，卡片和列表切换，详情与浏览器本地收藏。宣讲会支持日期分组、日历选择、今日及往期查看。管理员登录后，前台还会显示“面试记录”栏目，可直接增删改记录、上传面试录音并启动转写和复盘总结。使用 React、Ant Design 和 Ant Design Icons；按钮、表单、表格、抽屉、日历等均为开源组件。
+招聘信息支持关键词、城市、学历、单位类型及状态筛选，卡片和列表切换，详情与收藏。宣讲会支持日期分组、日历选择、今日及往期查看。登录用户可使用“职位库”筛选公共职位，并保存仅自己可见的关注程度、投递状态、标签和备注。管理员登录后，前台还会显示“面试记录”栏目，可直接增删改记录、上传面试录音并启动转写和复盘总结。使用 React、Ant Design 和 Ant Design Icons；按钮、表单、表格、抽屉、日历等均为开源组件。
 
 后台支持手动添加、编辑、删除、访客可见、归档、置顶及恢复信息；状态、访客可见、归档和置顶列均可排序。关闭“访客可见”后，访客看不到该条信息，管理员登录后的前台仍可见；归档后所有前台都不显示，只在后台保留。置顶不会绕过这两条可见规则。人工调整不会回写金山文档；点击“恢复”会清除此条记录的全部人工覆盖。删除原表记录时会保存墓碑，防止后续同步重新加入。
 
@@ -79,17 +78,19 @@ MAX_AUDIO_UPLOAD_MB=500
 
 FastAPI 后台线程每 900 秒读取金山文档“招聘信息”和“宣讲会信息”。同步间隔从上次尝试结束计算，进度跨重启保存在 SQLite。每次同时检查两个表的版本和完整性，再通过数据库事务统一更新。失败时保留上次成功数据并在页面提示。浏览器每 15 分钟重新请求数据，返回浏览器标签页时也会刷新。
 
-访客收藏保存在当前浏览器；管理员登录后使用服务器收藏，并按管理员账号在不同设备间同步。
+访客收藏保存在当前浏览器；普通用户与管理员的收藏按账号保存在服务器，在登录设备间同步，账号之间相互隔离。
 
 原表需保持公开可读。适配器使用金山文档公开查看接口；上游协议、表头或分享权限发生变化时可能需要更新 `backend/source.py` 或 `backend/binvar.py`。更换源链接应使用同样的工作表和表头。同步不会修改原表。
 
 时间均按北京时间解释。原表未填时间、截止日期、地点等信息时明确标记未注明。二维码及嵌入图片暂不转存，通过“查看原表”查阅。
 
-## 管理员凭据
+## 账号与权限
 
-初始账号为 `admin`。随机初始密码保存在部署目录下的 `data/initial-admin.txt`（仅属主可读），不纳入源码。首次登录后请在“安全设置”修改密码。修改后所有管理会话失效，服务器初始凭据文件自动移除。
+访客可浏览访客可见的招聘与宣讲信息，并在当前浏览器保存收藏。普通用户登录后额外使用职位库与账号内收藏，不能访问管理后台、面试记录、隐藏记录或录音管理。管理员可管理全部内容、同步任务和邀请码；职位库中的个人跟进数据仍只属于当前管理员账号。公共职位数据只同步一份，个人跟进数据按账号分开保存。
 
-管理会话有效期 8 小时，Cookie 设置 Secure、HttpOnly、SameSite=Strict；密码采用 scrypt 哈希。后台写接口验证来源并限制登录尝试。
+注册采用邀请码：管理员在后台“用户邀请”指定使用次数和过期时间，创建时取得一次完整邀请码，可随时删除。新用户填写账号、重复密码和邀请码后注册；密码至少 12 位，包含大小写字母、数字和符号。初始管理员账号为 `admin`，随机初始密码保存在部署目录下的 `data/initial-admin.txt`（仅属主可读），不纳入源码。首次登录后请在“安全设置”修改密码。
+
+会话有效期 8 小时，Cookie 设置 Secure、HttpOnly、SameSite=Strict；密码采用 scrypt 哈希，邀请码只保存哈希。写接口验证来源；登录和注册有限流。登录页可选“在此设备保存密码”，该选项会在当前浏览器本地存储账号和密码，只应在可信设备使用。
 
 ## 部署架构
 
@@ -97,14 +98,14 @@ Cloudflare 橙云 → AWS Nginx HTTPS → AWS FRPS `58112` → Windows FRPC → 
 
 Nginx 直接提供 `frontend/dist/assets` 静态资源，应用负责页面入口及 API。容器以非 root 用户运行，根文件系统只读；持久数据为 `data/jobs.sqlite3`。保持单 worker，避免重复启动同步线程。
 
-AWS Nginx 配置挂载在 `/home/web/conf.d/job.dapanclaw.top.conf`，仓库中的 `deploy/nginx/job.dapanclaw.top.conf` 是可迁移模板。Cloudflare SSL/TLS 模式使用 **Full (strict)**，不要对 `/api/*` 配置强制缓存规则。
+仓库中的 `deploy/nginx/job.dapanclaw.top.conf` 是入口反代模板。Cloudflare SSL/TLS 模式使用 **Full (strict)**，不要对 `/api/*` 配置强制缓存规则。
 
 ## 构建与发布
 
 以下命令在 WSL 执行。前端由 Docker 多阶段构建自动编译，无需先在宿主机安装 Node 依赖。
 
 ```bash
-cd /home/zhihongpan/services/dapan-job-board
+cd /path/to/dapan-job-board
 docker compose build
 docker compose -f compose.yaml -f compose.wsl.yaml up -d
 docker compose -f compose.yaml -f compose.wsl.yaml ps
@@ -112,11 +113,11 @@ curl -fsS http://127.0.0.1:58112/api/health
 curl -fsS https://job.dapanclaw.top/api/health
 ```
 
-基础镜像、Debian 软件包和 Python 依赖使用官方 HTTPS 源，依赖分别在 `frontend/package-lock.json` 和 `backend/requirements.lock` 锁定。当前 WSL 的 Clash TUN 对 Docker bridge 的部分 fake-IP 回程不可用，因此私有 `.env` 设置 `BUILD_NETWORK=host`，运行时叠加 `compose.wsl.yaml`。覆盖文件使用 host 网络，但 Uvicorn 仍只绑定 `127.0.0.1:58112`。`dapan-job-board-direct-routing.service` 按容器用户 UID 10001 将应用出站流量送往物理局域网网关，容器使用公共 DNS，因此金山文档、模型、百炼和 PushPlus 不经过 Clash 代理节点；其他 WSL 流量不受影响。
+基础镜像、Debian 软件包和 Python 依赖使用官方 HTTPS 源，依赖分别在 `frontend/package-lock.json` 和 `backend/requirements.lock` 锁定。WSL 镜像网络若与 TUN 代理冲突，可在私有 `.env` 设置 `BUILD_NETWORK=host`，并叠加 `compose.wsl.yaml`。此配置让 Uvicorn 仅绑定回环地址；`deploy/systemd/dapan-job-board-direct-routing.service` 可按容器用户 UID 设置独立的物理网络出口。
 
 ```bash
 # 运行日志 / 重启
-cd /home/zhihongpan/services/dapan-job-board
+cd /path/to/dapan-job-board
 docker compose logs --tail=100 app
 docker compose -f compose.yaml -f compose.wsl.yaml restart app
 

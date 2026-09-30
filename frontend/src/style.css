@@ -61,6 +61,8 @@ input {
 .header-actions {
   margin-left: auto;
 }
+.invite-form { display: flex; flex-wrap: wrap; gap: 8px 12px; margin: 16px 0 20px; }
+.invite-form .ant-form-item { margin: 0; }
 .page {
   max-width: 1320px;
   margin: auto;
@@ -982,17 +984,30 @@ input {
     font-size: 29px;
   }
 }
+@media (min-width: 601px) and (max-width: 850px) {
+  .header-inner { flex-wrap: wrap; width: 100%; min-width: 0; box-sizing: border-box; padding-block: 12px; }
+  .nav-tabs { order: 3; width: 100%; min-width: 0; }
+  .nav-tabs .ant-segmented-group { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .nav-tabs-4 .ant-segmented-group { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .nav-tabs .ant-segmented-item, .nav-tabs .ant-segmented-item-label { min-width: 0; }
+}
 @media (max-width: 600px) {
   .header-inner {
     padding: 15px 18px 12px;
     flex-wrap: wrap;
     gap: 14px;
     min-height: 78px;
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
   }
   .brand {
     font-size: 18px;
     gap: 9px;
+    min-width: 0;
+    max-width: calc(100% - 88px);
   }
+  .brand > span:last-child { overflow: hidden; text-overflow: ellipsis; }
   .brand-mark {
     width: 36px;
     height: 36px;
@@ -1007,13 +1022,25 @@ input {
   .nav-tabs {
     order: 3;
     width: 100%;
+    min-width: 0;
     display: block;
+    box-sizing: border-box;
   }
   .nav-tabs .ant-segmented-group {
-    display: flex;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
+  .nav-tabs-4 .ant-segmented-group { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .nav-tabs .ant-segmented-item {
-    flex: 1;
+    min-width: 0;
+  }
+  .nav-tabs .ant-segmented-item-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    padding-inline: 3px;
+    font-size: 12px;
   }
   .page {
     padding: 27px 16px 40px;

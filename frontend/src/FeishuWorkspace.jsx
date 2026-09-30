@@ -81,7 +81,7 @@ function FacetRow({ title, values, selected, onChange, labels = {}, color = "def
   </div>;
 }
 
-export default function FeishuWorkspace() {
+export default function FeishuWorkspace({ isAdmin = false }) {
   const { message } = App.useApp();
   const [manifest, setManifest] = useState(null);
   const [rows, setRows] = useState([]);
@@ -126,7 +126,7 @@ export default function FeishuWorkspace() {
     return () => clearInterval(timer);
   }, [deadlineDays]);
   const loadManifest = async () => {
-    try { setManifest(await request("/admin/feishu/manifest")); setError(""); }
+    try { setManifest(await request("/workspace/manifest")); setError(""); }
     catch (reason) { setError(reason.message); }
   };
   useEffect(() => {
@@ -140,7 +140,7 @@ export default function FeishuWorkspace() {
     setLoading(true);
     const params = new URLSearchParams({ q: search, sort, direction, group_by: groupBy, deadline_days: String(deadlineDays), limit: String(pageSize), offset: String((page - 1) * pageSize) });
     Object.entries(filters).forEach(([key, values]) => (values || []).forEach((value) => params.append(key, String(value))));
-    request(`/admin/feishu/records?${params}`).then((result) => {
+    request(`/workspace/records?${params}`).then((result) => {
       if (!active) return;
       setRows(result.items || []); setTotal(result.total || 0); setFacets(result.facets || {}); setError("");
     }).catch((reason) => { if (active) setError(reason.message); })
@@ -163,7 +163,7 @@ export default function FeishuWorkspace() {
     if (!row || !next) return;
     setBusy(true);
     try {
-      await request(`/admin/feishu/annotations/${encodeURIComponent(row.table_id)}/${encodeURIComponent(row.record_id)}`, "PUT", {
+      await request(`/workspace/annotations/${encodeURIComponent(row.table_id)}/${encodeURIComponent(row.record_id)}`, "PUT", {
         status: next.status, priority: next.status === "关注" ? Number(next.priority) || 1 : 0,
         tags: String(next.tags || "").split(/[,，]/).map((value) => value.trim()).filter(Boolean), note: next.note || "",
       });
@@ -241,10 +241,10 @@ export default function FeishuWorkspace() {
 
   return <div className="feishu-workspace">
     <div className="feishu-heading">
-      <div><Title level={2}>飞书职位库 <Text className="feishu-count">{manifest?.status?.records?.toLocaleString() || "—"}</Text></Title>
+      <div><Title level={2}>职位库 <Text className="feishu-count">{manifest?.status?.records?.toLocaleString() || "—"}</Text></Title>
         <Text type="secondary" className="feishu-source-time">{last?.finished ? `源表更新于 ${dayjs(last.finished).format("YYYY-MM-DD HH:mm")}` : "等待首次同步"}</Text></div>
       <Space><Button type="text" icon={<ReloadOutlined />} onClick={() => { loadManifest(); setRevision((value) => value + 1); }}>刷新</Button>
-        <Button type="text" icon={<SyncOutlined />} loading={busy || manifest?.status?.running} onClick={sync}>同步源表</Button></Space>
+        {isAdmin && <Button type="text" icon={<SyncOutlined />} loading={busy || manifest?.status?.running} onClick={sync}>同步源表</Button>}</Space>
     </div>
     {error && <Alert type="error" showIcon message={error} action={<Button size="small" onClick={() => { loadManifest(); setRevision((value) => value + 1); }}>重试</Button>} />}
     {last?.status === "error" && <Alert type="warning" showIcon message="上次同步失败，当前仍可使用已保存的数据" description={last.message} />}
