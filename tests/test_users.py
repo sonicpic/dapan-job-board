@@ -96,3 +96,21 @@ def test_normal_user_can_change_only_own_password(client):
     assert user.get('/api/workspace/records').status_code == 401
     assert user.post('/api/login', json={'username': 'alice', 'password': 'NewStrongPass123!'}).status_code == 200
     assert client.get('/api/admin').status_code == 200
+
+
+def test_legacy_roles_migrate_and_new_accounts_default_to_user(client):
+    with app.conn() as c:
+        c.execute('DROP TABLE users')
+        c.execute('CREATE TABLE users(username TEXT PRIMARY KEY,password TEXT NOT NULL)')
+        c.execute('INSERT INTO users VALUES(?,?)', ('legacy', app.hash_pw('LegacyPass123!')))
+    app.init()
+    with app.conn() as c:
+        assert c.execute("SELECT role FROM users WHERE username='legacy'").fetchone()[0] == 'admin'
+        assert next(row for row in c.execute('PRAGMA table_info(users)') if row['name'] == 'role')['dflt_value'] == "'user'"
+        c.execute('DROP TABLE users')
+        c.execute("CREATE TABLE users(username TEXT PRIMARY KEY,password TEXT NOT NULL,role TEXT NOT NULL DEFAULT 'admin')")
+        c.execute('INSERT INTO users VALUES(?,?,?)', ('legacy', app.hash_pw('LegacyPass123!'), 'admin'))
+    app.init()
+    with app.conn() as c:
+        assert c.execute("SELECT role FROM users WHERE username='legacy'").fetchone()[0] == 'admin'
+        assert next(row for row in c.execute('PRAGMA table_info(users)') if row['name'] == 'role')['dflt_value'] == "'user'"

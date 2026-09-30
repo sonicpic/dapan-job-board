@@ -115,7 +115,7 @@ def init():
         CREATE TABLE IF NOT EXISTS overrides(id TEXT PRIMARY KEY,data TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS deleted_records(id TEXT PRIMARY KEY,source TEXT,source_key TEXT,deleted_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS sync_logs(id INTEGER PRIMARY KEY AUTOINCREMENT,started TEXT,finished TEXT,status TEXT,jobs INTEGER,events INTEGER,changed INTEGER,message TEXT);
-        CREATE TABLE IF NOT EXISTS users(username TEXT PRIMARY KEY,password TEXT NOT NULL,role TEXT NOT NULL DEFAULT 'admin');
+        CREATE TABLE IF NOT EXISTS users(username TEXT PRIMARY KEY,password TEXT NOT NULL,role TEXT NOT NULL DEFAULT 'user');
         CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY,username TEXT NOT NULL,expires REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS login_attempts(ip TEXT,at REAL);
         CREATE TABLE IF NOT EXISTS registration_attempts(ip TEXT,at REAL);
@@ -266,7 +266,16 @@ def init():
         c.execute('CREATE INDEX IF NOT EXISTS idx_feishu_search_deadline ON feishu_record_search(base_token,deadline_sort)')
         user_columns = {row['name'] for row in c.execute('PRAGMA table_info(users)')}
         if 'role' not in user_columns:
-            c.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'admin'")
+            c.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
+            # Every account predating roles had administrator privileges.
+            c.execute("UPDATE users SET role='admin'")
+        else:
+            role_column = next(row for row in c.execute('PRAGMA table_info(users)') if row['name'] == 'role')
+            if str(role_column['dflt_value'] or '').strip("'\"") == 'admin':
+                c.execute("CREATE TABLE users_role_safe(username TEXT PRIMARY KEY,password TEXT NOT NULL,role TEXT NOT NULL DEFAULT 'user')")
+                c.execute('INSERT INTO users_role_safe(username,password,role) SELECT username,password,role FROM users')
+                c.execute('DROP TABLE users')
+                c.execute('ALTER TABLE users_role_safe RENAME TO users')
         c.execute("UPDATE sync_logs SET status='error',finished=?,message='服务重新启动，同步将重试' WHERE status='running'", (now(),))
         c.execute("UPDATE company_reviews SET status='queued',error='服务重新启动，分析将重试' WHERE status='running'")
         c.execute("UPDATE event_recordings SET status='queued',error='服务重新启动，录音处理将重试' WHERE status IN ('transcribing','summarizing')")
